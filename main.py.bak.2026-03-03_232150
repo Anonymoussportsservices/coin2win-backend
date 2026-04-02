@@ -1,0 +1,371 @@
+import os
+import hmac
+import hashlib
+import json
+import time
+import requests
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse
+from dotenv import load_dotenv
+
+from sqlalchemy import (
+    create_engine, Column, Integer, String, Float, Text,
+    DateTime, func, UniqueConstraint, ForeignKey
+)
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.exc import IntegrityError
+
+load_dotenv("/var/www/coin2win/.env")
+
+app = FastAPI()
+
+NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
+NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
+IPN_CALLBACK_URL = os.getenv("NOWPAYMENTS_IPN_CALLBACK_URL")
+
+MIN_DEPOSIT_USD = float(os.getenv("MIN_DEPOSIT_USD", "20"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not NOWPAYMENTS_API_KEY:
+    raise RuntimeError("Missing NOWPAYMENTS_API_KEY in .env")
+if not NOWPAYMENTS_IPN_SECRET:
+    raise RuntimeError("Missing NOWPAYMENTS_IPN_SECRET in .env")
+if not IPN_CALLBACK_URL:
+    raise RuntimeError("Missing NOWPAYMENTS_IPN_CALLBACK_URL in .env")
+if not DATABASE_URL:
+    raise RuntimeError("Missing DATABASE_URL in .env")
+
+# --------------------------
+# Professional error format
+# --------------------------
+PRO_MINIMUM_MESSAGE = (
+    "Due to payment processor and network requirements, the selected cryptocurrency "
+    "currently requires a higher minimum deposit. Please increase the deposit amount "
+    "or select another cryptocurrency."
+)
+SUGGESTED_COINS_DEFAULT = ["ltc", "usdttrc20", "doge", "trx"]
+
+def _error_response(
+    *,
+    error_code,
+    message,
+    amount_usd=None,
+    pay_currency=None,
+    suggestions=None,
+    nowpayments=None,
+):
+    payload = {
+        "ok": False,
+        "error_code": error_code,
+        "message": message,
+    }
+    if amount_usd is not None:
+        payload["amount_usd"] = float(amount_usd)
+    if pay_currency is not None:
+        payload["pay_currency"] = pay_currency
+    if suggestions:
+        payload["suggestions"] = suggestions
+    # keep for debugging; remove later if you don’t want it exposed externally
+    if nowpayments:
+        payload["nowpayments"] = nowpayments
+    return payload
+
+def _np_headers():
+    return {
+        "x-api-key": NOWPAYMENTS_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+# --------------------------
+# Database (Postgres)
+# --------------------------
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(String(64), primary_key=True)  # we keep your "user_1" style IDs for now
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    wallet = relationship("Wallet", uselist=False, back_populates="user")
+
+class Wallet(Base):
+    __tablename__ = "wallets"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    balance_usd = Column(Float, nullable=False, default=0.0)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="wallet")
+
+class Deposit(Base):
+    __tablename__ = "deposits"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+
+    payment_id = Column(String(64), nullable=False)  # NOWPayments payment_id
+    status = Column(String(32), nullable=False, default="waiting")
+
+    amount_usd = Column(Float, nullable=False)
+    pay_currency = Column(String(32), nullable=False)
+
+    pay_amount = Column(Float, nullable=True)
+    pay_address = Column(Text, nullable=True)
+
+    raw_create_response = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("payment_id", name="uq_deposits_payment_id"),
+    )
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    type = Column(String(32), nullable=False)  # deposit, bet, win, withdrawal
+    amount = Column(Float, nullable=False)
+    balance_after = Column(Float, nullable=False)
+    reference = Column(String(128), nullable=True)  # e.g. payment_id
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+@app.on_event("startup")
+def _startup():
+    Base.metadata.create_all(bind=engine)
+
+def _get_or_create_user_and_wallet(db, user_id: str):
+    user = db.get(User, user_id)
+    if not user:
+        user = User(id=user_id)
+        db.add(user)
+        db.flush()
+    wallet = db.query(Wallet).filter(Wallet.user_id == user_id).one_or_none()
+    if not wallet:
+        wallet = Wallet(user_id=user_id, balance_usd=0.0)
+        db.add(wallet)
+        db.flush()
+    return user, wallet
+
+# --------------------------
+# Routes
+# --------------------------
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return """
+    <html>
+    <head><title>Coin2Win</title></head>
+    <body style="background:#0f172a;color:white;text-align:center;padding-top:15%">
+        <h1>Coin2Win.bet</h1>
+        <p>Crypto Casino Platform</p>
+        <p>Coming Online 🚀</p>
+        <p><a style="color:#60a5fa" href="/docs">API Docs</a></p>
+    </body>
+    </html>
+    """
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "app": "coin2win"}
+
+@app.get("/payments/nowpayments/currencies")
+def nowpayments_currencies():
+    url = "https://api.nowpayments.io/v1/currencies"
+    r = requests.get(url, headers={"x-api-key": NOWPAYMENTS_API_KEY}, timeout=30)
+    return r.json()
+
+@app.post("/payments/nowpayments/estimate")
+async def nowpayments_estimate(request: Request):
+    body = await request.json()
+    amount_usd = float(body.get("amount_usd", 0))
+    pay_currency = str(body.get("pay_currency", "")).lower().strip()
+
+    if amount_usd <= 0:
+        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
+    if not pay_currency:
+        raise HTTPException(status_code=400, detail="pay_currency required")
+
+    url = "https://api.nowpayments.io/v1/estimate"
+    payload = {"amount": amount_usd, "currency_from": "usd", "currency_to": pay_currency}
+    r = requests.post(url, headers=_np_headers(), json=payload, timeout=30)
+    return r.json()
+
+@app.post("/deposit/create")
+async def deposit_create(request: Request):
+    body = await request.json()
+    user_id = str(body.get("user_id", "")).strip()
+    amount_usd = float(body.get("amount_usd", 0))
+    pay_currency = str(body.get("pay_currency", "")).lower().strip()
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    if amount_usd <= 0:
+        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
+    if amount_usd < MIN_DEPOSIT_USD:
+        raise HTTPException(status_code=400, detail=f"Minimum deposit is ${MIN_DEPOSIT_USD:.0f} USD")
+    if not pay_currency:
+        raise HTTPException(status_code=400, detail="pay_currency required")
+
+    # Create NOWPayments payment
+    url = "https://api.nowpayments.io/v1/payment"
+    payload = {
+        "price_amount": amount_usd,
+        "price_currency": "usd",
+        "pay_currency": pay_currency,
+        "ipn_callback_url": IPN_CALLBACK_URL,
+        "order_id": f"{user_id}_{int(time.time())}",
+        "order_description": f"Coin2Win deposit for {user_id}",
+    }
+
+    r = requests.post(url, headers=_np_headers(), json=payload, timeout=30)
+    data = r.json()
+
+    if not data.get("payment_id"):
+        return _error_response(
+            error_code="COIN_MINIMUM_HIGHER_THAN_AMOUNT",
+            message=PRO_MINIMUM_MESSAGE,
+            amount_usd=amount_usd,
+            pay_currency=pay_currency,
+            suggestions=SUGGESTED_COINS_DEFAULT,
+            nowpayments=data,
+        )
+
+    payment_id = str(data["payment_id"])
+
+    # Persist deposit + ensure user/wallet exist
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+
+        dep = Deposit(
+            user_id=user_id,
+            payment_id=payment_id,
+            status=str(data.get("payment_status") or "waiting"),
+            amount_usd=amount_usd,
+            pay_currency=pay_currency,
+            pay_amount=float(data.get("pay_amount")) if data.get("pay_amount") is not None else None,
+            pay_address=data.get("pay_address"),
+            raw_create_response=json.dumps(data),
+        )
+        db.add(dep)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # If duplicate payment_id somehow, just return a clean response
+        raise HTTPException(status_code=409, detail="Deposit already exists for this payment.")
+    finally:
+        db.close()
+
+    return {
+        "ok": True,
+        "payment_id": payment_id,
+        "status": data.get("payment_status"),
+        "price_amount_usd": amount_usd,
+        "pay_currency": pay_currency,
+        "pay_amount": data.get("pay_amount"),
+        "pay_address": data.get("pay_address"),
+        "payment_url": data.get("payment_url"),
+    }
+
+@app.post("/webhooks/nowpayments")
+async def nowpayments_webhook(request: Request):
+    raw_body = await request.body()
+    received_sig = request.headers.get("x-nowpayments-sig")
+    if not received_sig:
+        raise HTTPException(status_code=400, detail="Missing x-nowpayments-sig header")
+
+    generated_sig = hmac.new(
+        NOWPAYMENTS_IPN_SECRET.encode(),
+        raw_body,
+        hashlib.sha512,
+    ).hexdigest()
+
+    if generated_sig != received_sig:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    data = json.loads(raw_body.decode("utf-8"))
+    payment_id = str(data.get("payment_id", "")).strip()
+    payment_status = str(data.get("payment_status", "")).lower().strip()
+
+    if not payment_id:
+        raise HTTPException(status_code=400, detail="Missing payment_id in webhook")
+
+    db = SessionLocal()
+    try:
+        dep = db.query(Deposit).filter(Deposit.payment_id == payment_id).one_or_none()
+        if not dep:
+            raise HTTPException(status_code=400, detail="Unknown payment_id")
+
+        # Update deposit status always
+        dep.status = payment_status
+
+        # Credit only once, only when finished
+        if payment_status == "finished":
+            if dep.status == "credited":
+                db.commit()
+                return {"ok": True, "message": "Already credited"}
+
+            # Lock wallet row logically by doing everything in one transaction
+            _get_or_create_user_and_wallet(db, dep.user_id)
+            wallet = db.query(Wallet).filter(Wallet.user_id == dep.user_id).with_for_update().one()
+
+            new_balance = round(float(wallet.balance_usd) + float(dep.amount_usd), 2)
+            wallet.balance_usd = new_balance
+
+            tx = Transaction(
+                user_id=dep.user_id,
+                type="deposit",
+                amount=float(dep.amount_usd),
+                balance_after=new_balance,
+                reference=payment_id,
+            )
+            db.add(tx)
+
+            dep.status = "credited"
+
+        db.commit()
+        return {"ok": True, "payment_id": payment_id, "status": payment_status}
+    finally:
+        db.close()
+
+@app.get("/wallet/{user_id}")
+def wallet(user_id: str):
+    db = SessionLocal()
+    try:
+        w = db.query(Wallet).filter(Wallet.user_id == user_id).one_or_none()
+        bal = float(w.balance_usd) if w else 0.0
+        return {"user_id": user_id, "balance_usd": bal}
+    finally:
+        db.close()
+
+@app.get("/admin/deposits")
+def admin_deposits(limit: int = 50):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Deposit)
+            .order_by(Deposit.id.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return {
+            "count": len(rows),
+            "deposits": [
+                {
+                    "id": d.id,
+                    "user_id": d.user_id,
+                    "payment_id": d.payment_id,
+                    "status": d.status,
+                    "amount_usd": d.amount_usd,
+                    "pay_currency": d.pay_currency,
+                    "pay_amount": d.pay_amount,
+                    "pay_address": d.pay_address,
+                    "created_at": str(d.created_at),
+                }
+                for d in rows
+            ],
+        }
+    finally:
+        db.close()

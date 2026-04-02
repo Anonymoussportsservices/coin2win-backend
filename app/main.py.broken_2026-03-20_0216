@@ -1,0 +1,2640 @@
+import os
+import hmac
+import hashlib
+import json
+import time
+import requests
+
+from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from dotenv import load_dotenv
+
+load_dotenv("/var/www/coin2win/.env")
+
+from app.auth_routes import get_bearer_token, decode_token
+from sqlalchemy import (
+    text,
+    create_engine,
+    Column,
+    Integer,
+    String,
+    Float,
+    Text,
+    DateTime,
+    func,
+    ForeignKey,
+)
+from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.exc import IntegrityError
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://159.203.121.161:3000",
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+from collections import deque
+import threading
+from datetime import datetime, timezone
+
+LIVE_CASINO_FEED = deque(maxlen=50)
+LIVE_CASINO_FEED_LOCK = threading.Lock()
+
+def _mask_user_id(user_id: str) -> str:
+    s = str(user_id or "").strip()
+    if len(s) <= 2:
+        return s
+    if len(s) <= 6:
+        return s[:2] + "***"
+    return s[:2] + "***" + s[-2:]
+
+def _push_live_feed_event(
+    *,
+    game: str,
+    user_id: str,
+    amount_usd: float,
+    payout: float,
+    multiplier: float | None = None,
+    source: str = "real",
+):
+    profit = round(float(payout) - float(amount_usd), 2)
+    event = {
+        "id": f"{game}:{user_id}:{datetime.now(timezone.utc).timestamp()}",
+        "type": "win",
+        "game": game,
+        "user": _mask_user_id(user_id),
+        "amount_usd": round(float(amount_usd), 2),
+        "payout": round(float(payout), 2),
+        "profit": profit,
+        "multiplier": round(float(multiplier), 2) if multiplier is not None else None,
+        "source": source,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with LIVE_CASINO_FEED_LOCK:
+        LIVE_CASINO_FEED.appendleft(event)
+# --------------------------
+# Config
+# --------------------------
+NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
+NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
+IPN_CALLBACK_URL = os.getenv("NOWPAYMENTS_IPN_CALLBACK_URL")
+
+MIN_DEPOSIT_USD = float(os.getenv("MIN_DEPOSIT_USD", "20"))
+MIN_WITHDRAW_USD = float(os.getenv("MIN_WITHDRAW_USD", "20"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+ADMIN_KEY = os.getenv("ADMIN_KEY", "").strip()
+
+if not NOWPAYMENTS_API_KEY:
+    raise RuntimeError("Missing NOWPAYMENTS_API_KEY in .env")
+if not NOWPAYMENTS_IPN_SECRET:
+    raise RuntimeError("Missing NOWPAYMENTS_IPN_SECRET in .env")
+if not IPN_CALLBACK_URL:
+    raise RuntimeError("Missing NOWPAYMENTS_IPN_CALLBACK_URL in .env")
+if not DATABASE_URL:
+    raise RuntimeError("Missing DATABASE_URL in .env")
+
+ACTIVE_WITHDRAW_STATUSES = ("requested", "approved", "sent")
+
+# --------------------------
+# Database
+# --------------------------
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(String(64), primary_key=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class Wallet(Base):
+    __tablename__ = "wallets"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), ForeignKey("users.id"), unique=True, nullable=False)
+
+    # New model:
+    balance_total = Column(Float, default=0)
+    balance_pending = Column(Float, default=0)
+    balance_available = Column(Float, default=0)
+
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Deposit(Base):
+    __tablename__ = "deposits"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+
+    payment_id = Column(String(64), unique=True, nullable=False)
+    status = Column(String(32), default="waiting")
+
+    amount_usd = Column(Float, nullable=False)
+    pay_currency = Column(String(32), nullable=False)
+
+    pay_amount = Column(Float, nullable=True)
+    pay_address = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Withdrawal(Base):
+    __tablename__ = "withdrawals"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+
+    amount_usd = Column(Float, nullable=False)
+    payout_currency = Column(String(32), nullable=False)
+    payout_address = Column(Text, nullable=False)
+
+    # requested -> approved -> sent -> completed
+    # rejected (refunds)
+    status = Column(String(32), default="requested")
+    refunded = Column(Integer, default=0)  # 0/1
+    note = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+
+    # deposit, withdrawal_request, withdrawal_refund, withdrawal_complete, etc
+    type = Column(String(64), nullable=False)
+
+    # + credit, - debit
+    amount = Column(Float, nullable=False)
+
+    # Store wallet TOTAL after the transaction (or total at time of event)
+    balance_after = Column(Float, nullable=False)
+
+    reference = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+@app.on_event("startup")
+def startup():
+    pass
+    
+
+# ==========================
+# GLOBAL CRASH V2 (24/7 shared rounds)
+# ==========================
+
+GLOBAL_CRASH_ENGINE_USER = "__global_crash_engine__"
+GLOBAL_CRASH_BETTING_SECONDS = int(os.getenv("GLOBAL_CRASH_BETTING_SECONDS", "5"))
+GLOBAL_CRASH_COOLDOWN_SECONDS = int(os.getenv("GLOBAL_CRASH_COOLDOWN_SECONDS", "2"))
+GLOBAL_CRASH_TICK_SECONDS = float(os.getenv("GLOBAL_CRASH_TICK_SECONDS", "0.25"))
+
+GLOBAL_CRASH_ENGINE_STARTED = False
+def crash_global_round_bets(round_id: int):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(GlobalCrashBet)
+            .filter(GlobalCrashBet.round_id == round_id)
+            .order_by(GlobalCrashBet.id.asc())
+            .all()
+        )
+
+        def mask(uid: str):
+            raw = str(uid or "player")
+            if len(raw) <= 4:
+                return raw[0] + "***" if raw else "p***"
+            return raw[:1] + "***" + raw[-3:]
+
+        return {
+            "round_id": round_id,
+            "count": len(rows),
+            "bets": [
+                {
+                    "bet_id": r.id,
+                    "player": mask(r.user_id),
+                    "amount": float(r.amount_usd),
+                    "auto_cashout": float(r.auto_cashout) if r.auto_cashout is not None else None,
+                    "status": str(r.status),
+                    "payout": float(r.payout),
+                    "cashout_multiplier": float(r.cashout_multiplier) if r.cashout_multiplier is not None else None,
+                    "is_real": True,
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        db.close()
+
+@app.get("/studio/live-wins")
+def studio_live_wins(limit: int = 20):
+    safe_limit = max(1, min(int(limit), 50))
+    with LIVE_CASINO_FEED_LOCK:
+        items = list(LIVE_CASINO_FEED)[:safe_limit]
+    return {
+        "ok": True,
+        "items": items,
+    }
+
+@app.get("/studio/crash-global/round-bets/{round_id}")
+def crash_global_round_bets(round_id: int):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(GlobalCrashBet)
+            .filter(GlobalCrashBet.round_id == round_id)
+            .order_by(GlobalCrashBet.id.asc())
+            .all()
+        )
+
+        user_ids = list({str(r.user_id) for r in rows if r.user_id})
+        username_map = {}
+
+        if user_ids:
+            result = db.execute(
+                text("""
+                    SELECT user_id, username
+                    FROM c2w_users
+                    WHERE user_id = ANY(:user_ids)
+                """),
+                {"user_ids": user_ids},
+            ).mappings().all()
+
+            username_map = {
+                str(row["user_id"]): str(row["username"])
+                for row in result
+            }
+
+        return {
+            "round_id": round_id,
+            "count": len(rows),
+            "bets": [
+                {
+                    "bet_id": r.id,
+                    "player": username_map.get(str(r.user_id), str(r.user_id)),
+                    "amount": float(r.amount_usd),
+                    "auto_cashout": float(r.auto_cashout) if r.auto_cashout is not None else None,
+                    "status": str(r.status),
+                    "payout": float(r.payout),
+                    "cashout_multiplier": float(r.cashout_multiplier) if r.cashout_multiplier is not None else None,
+                    "is_real": True,
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        db.close()
+
+
+class GlobalCrashRound(Base):
+    __tablename__ = "global_crash_rounds"
+
+    id = Column(Integer, primary_key=True)
+
+    server_seed_hash = Column(String(64), nullable=False)
+    client_seed = Column(Text, nullable=False)
+    nonce = Column(Integer, nullable=False)
+
+    crash_point = Column(Float, nullable=False)
+
+    # betting, running, crashed
+    status = Column(String(32), nullable=False, default="betting")
+
+    betting_started_at = Column(DateTime(timezone=True), nullable=True)
+    starts_at = Column(DateTime(timezone=True), nullable=True)
+    crashed_at = Column(DateTime(timezone=True), nullable=True)
+    cooldown_until = Column(DateTime(timezone=True), nullable=True)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class GlobalCrashBet(Base):
+    __tablename__ = "global_crash_bets"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+    round_id = Column(Integer, ForeignKey("global_crash_rounds.id"), nullable=False)
+
+    amount_usd = Column(Float, nullable=False)
+    auto_cashout = Column(Float, nullable=True)
+
+    # active, cashed_out, lost
+    status = Column(String(32), nullable=False, default="active")
+    cashout_multiplier = Column(Float, nullable=True)
+    payout = Column(Float, nullable=False, default=0)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    settled_at = Column(DateTime(timezone=True), nullable=True)
+
+
+Base.metadata.create_all(bind=engine)
+
+# --------------------------
+# Helpers
+# --------------------------
+def _require_admin(x_admin_key: str | None):
+    # If ADMIN_KEY is blank, admin endpoints are open (MVP).
+    if not ADMIN_KEY:
+        return
+    if not x_admin_key or x_admin_key.strip() != ADMIN_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+def _np_headers():
+    return {
+        "x-api-key": NOWPAYMENTS_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+def _round2(x: float) -> float:
+    return round(float(x), 2)
+
+def _get_or_create_user_and_wallet(db, user_id: str) -> Wallet:
+    user = db.get(User, user_id)
+    if not user:
+        user = User(id=user_id)
+        db.add(user)
+        db.flush()
+
+    wallet = db.query(Wallet).filter(Wallet.user_id == user_id).one_or_none()
+    if not wallet:
+        wallet = Wallet(
+            user_id=user_id,
+            balance_total=0,
+            balance_pending=0,
+            balance_available=0,
+        )
+        db.add(wallet)
+        db.flush()
+
+    return wallet
+
+def _serialize_wallet(w: Wallet):
+    return {
+        "user_id": w.user_id,
+        "balance_total": float(w.balance_total),
+        "balance_available": float(w.balance_available),
+        "balance_pending": float(w.balance_pending),
+        "updated_at": str(w.updated_at),
+    }
+
+def _serialize_withdrawal(w: Withdrawal):
+    return {
+        "id": w.id,
+        "user_id": w.user_id,
+        "amount_usd": float(w.amount_usd),
+        "payout_currency": w.payout_currency,
+        "payout_address": w.payout_address,
+        "status": w.status,
+        "refunded": bool(w.refunded),
+        "note": w.note,
+        "created_at": str(w.created_at),
+        "updated_at": str(w.updated_at),
+    }
+
+def _serialize_deposit(d: Deposit):
+    return {
+        "id": d.id,
+        "user_id": d.user_id,
+        "payment_id": d.payment_id,
+        "status": d.status,
+        "amount_usd": float(d.amount_usd),
+        "pay_currency": d.pay_currency,
+        "pay_amount": d.pay_amount,
+        "pay_address": d.pay_address,
+        "created_at": str(d.created_at),
+        "updated_at": str(d.updated_at),
+    }
+
+def _serialize_tx(t: Transaction):
+    return {
+        "id": t.id,
+        "user_id": t.user_id,
+        "type": t.type,
+        "amount": float(t.amount),
+        "balance_after": float(t.balance_after),
+        "reference": t.reference,
+        "created_at": str(t.created_at),
+    }
+
+# --------------------------
+# Public Routes
+# --------------------------
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return """
+    <html>
+    <head><title>Coin2Win</title></head>
+    <body style="background:#0f172a;color:white;text-align:center;padding-top:15%">
+        <h1>Coin2Win.bet</h1>
+        <p>Crypto Casino Platform</p>
+        <p>Coming Online 🚀</p>
+        <p><a style="color:#60a5fa" href="/docs">API Docs</a></p>
+    </body>
+    </html>
+    """
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "app": "coin2win"}
+
+@app.get("/wallet/{user_id}")
+def wallet(user_id: str):
+    db = SessionLocal()
+    try:
+        w = _get_or_create_user_and_wallet(db, user_id)
+        db.commit()
+        return _serialize_wallet(w)
+    finally:
+        db.close()
+
+# --------------------------
+# Deposits
+# --------------------------
+@app.post("/deposit/create")
+async def create_deposit(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid or empty JSON body")
+
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+
+    user_id = str(body.get("user_id", "")).strip()
+    pay_currency = str(body.get("pay_currency", "")).lower().strip()
+
+    try:
+        amount_usd = float(body.get("amount_usd", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="amount_usd must be a valid number")
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    if amount_usd <= 0:
+        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
+    if amount_usd < MIN_DEPOSIT_USD:
+        raise HTTPException(status_code=400, detail=f"Minimum deposit is ${MIN_DEPOSIT_USD:.0f} USD")
+    if not pay_currency:
+        raise HTTPException(status_code=400, detail="pay_currency required")
+
+    payload = {
+        "price_amount": amount_usd,
+        "price_currency": "usd",
+        "pay_currency": pay_currency,
+        "ipn_callback_url": IPN_CALLBACK_URL,
+        "order_id": f"{user_id}_{int(time.time())}",
+        "order_description": "Coin2Win deposit",
+    }
+
+    try:
+        r = requests.post(
+            "https://api.nowpayments.io/v1/payment",
+            headers=_np_headers(),
+            json=payload,
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Deposit provider request failed: {str(e)}")
+
+    try:
+        data = r.json()
+    except ValueError:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Deposit provider returned non-JSON response (HTTP {r.status_code})",
+        )
+
+    if r.status_code >= 400:
+        provider_error = (
+            data.get("message")
+            or data.get("error")
+            or data.get("detail")
+            or f"Deposit provider error (HTTP {r.status_code})"
+        )
+        raise HTTPException(status_code=502, detail=str(provider_error))
+
+    payment_id = str(data.get("payment_id", "")).strip()
+    payment_status = str(data.get("payment_status") or "waiting").lower().strip()
+
+    if not payment_id:
+        raise HTTPException(status_code=502, detail="Deposit provider did not return payment_id")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+
+        dep = Deposit(
+
+            user_id=user_id,
+            payment_id=payment_id,
+            status=payment_status or "waiting",
+            amount_usd=float(amount_usd),
+            pay_currency=pay_currency,
+            pay_amount=float(data.get("pay_amount")) if data.get("pay_amount") is not None else None,
+            pay_address=data.get("pay_address"),
+        )
+        db.add(dep)
+        db.commit()
+
+        return {
+            "ok": True,
+            "payment_id": dep.payment_id,
+            "status": dep.status,
+            "price_amount_usd": amount_usd,
+            "pay_currency": pay_currency,
+            "pay_amount": data.get("pay_amount"),
+            "pay_address": data.get("pay_address"),
+            "payment_url": data.get("payment_url"),
+        }
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Deposit already exists for this payment_id")
+    finally:
+        db.close()
+
+
+@app.post("/webhooks/nowpayments")
+async def webhook(request: Request):
+    raw = await request.body()
+
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty webhook body")
+
+    sig = request.headers.get("x-nowpayments-sig")
+    if not sig:
+        raise HTTPException(status_code=400, detail="Missing x-nowpayments-sig")
+
+    gen = hmac.new(
+        NOWPAYMENTS_IPN_SECRET.encode(),
+        raw,
+        hashlib.sha512,
+    ).hexdigest()
+
+    if not hmac.compare_digest(sig, gen):
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid webhook JSON")
+
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Webhook JSON must be an object")
+
+    payment_id = str(data.get("payment_id", "")).strip()
+    status = str(data.get("payment_status", "")).lower().strip()
+
+    if not payment_id:
+        raise HTTPException(status_code=400, detail="Missing payment_id")
+
+    db = SessionLocal()
+    try:
+        dep = db.query(Deposit).filter(Deposit.payment_id == payment_id).one_or_none()
+        if not dep:
+            raise HTTPException(status_code=400, detail="Unknown payment_id")
+
+        # Idempotent credit
+        if status == "finished" and dep.status != "credited":
+            _get_or_create_user_and_wallet(db, dep.user_id)
+
+            w = db.query(Wallet).filter(Wallet.user_id == dep.user_id).with_for_update().one()
+            w.balance_total = _round2(w.balance_total + dep.amount_usd)
+            w.balance_available = _round2(w.balance_available + dep.amount_usd)
+
+            tx = Transaction(
+                user_id=dep.user_id,
+                type="deposit",
+                amount=float(dep.amount_usd),
+                balance_after=float(w.balance_total),
+                reference=payment_id,
+            )
+            db.add(tx)
+            dep.status = "credited"
+        else:
+            if status:
+                dep.status = status
+
+        db.commit()
+        return {"ok": True, "payment_id": payment_id, "status": dep.status}
+    finally:
+        db.close()
+if float(payout) >= 5:
+    _push_live_feed_event(
+        game="crash",
+        user_id=bet.user_id,
+        amount_usd=float(bet.amount_usd),
+        payout=float(payout),
+        multiplier=float(target),
+        source="real",
+    )
+
+# --------------------------
+# Withdrawals
+# --------------------------
+@app.post("/withdraw/create")
+async def withdraw_create(request: Request):
+    body = await request.json()
+
+    user_id = str(body.get("user_id", "")).strip()
+    amount = float(body.get("amount_usd", 0))
+    currency = str(body.get("payout_currency", "")).lower().strip()
+    address = str(body.get("payout_address", "")).strip()
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
+    if amount < MIN_WITHDRAW_USD:
+        raise HTTPException(status_code=400, detail=f"Minimum withdrawal is ${MIN_WITHDRAW_USD:.0f}")
+    if not currency:
+        raise HTTPException(status_code=400, detail="payout_currency required")
+    if not address:
+        raise HTTPException(status_code=400, detail="payout_address required")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+
+        # 🔒 Withdrawal lock: only one active withdrawal at a time
+        existing_active = (
+            db.query(Withdrawal)
+            .filter(Withdrawal.user_id == user_id)
+            .filter(Withdrawal.status.in_(ACTIVE_WITHDRAW_STATUSES))
+            .count()
+        )
+        if existing_active > 0:
+            raise HTTPException(
+                status_code=400,
+                detail="You already have a withdrawal in progress. Please wait until it is completed or rejected.",
+            )
+
+        # Lock wallet row
+        w = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
+
+        if float(w.balance_available) < amount:
+            raise HTTPException(status_code=400, detail="Insufficient balance")
+
+        # Move funds: available -> pending
+        w.balance_available = _round2(w.balance_available - amount)
+        w.balance_pending = _round2(w.balance_pending + amount)
+
+        wd = Withdrawal(
+            user_id=user_id,
+            amount_usd=float(amount),
+            payout_currency=currency,
+            payout_address=address,
+            status="requested",
+        )
+        db.add(wd)
+        db.flush()  # get wd.id
+
+        tx = Transaction(
+            user_id=user_id,
+            type="withdrawal_request",
+            amount=-float(amount),
+            balance_after=float(w.balance_total),  # total unchanged at request time
+            reference=f"withdrawal:{wd.id}",
+        )
+        db.add(tx)
+
+        db.commit()
+        return {
+            "ok": True,
+            "withdrawal_id": wd.id,
+            "status": wd.status,
+            "amount_usd": wd.amount_usd,
+            "payout_currency": wd.payout_currency,
+        }
+    finally:
+        db.close()
+
+@app.get("/withdraw/{user_id}")
+def withdraw_list_user(user_id: str, limit: int = 20):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Withdrawal)
+            .filter(Withdrawal.user_id == user_id)
+            .order_by(Withdrawal.id.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return {"user_id": user_id, "count": len(rows), "withdrawals": [_serialize_withdrawal(w) for w in rows]}
+    finally:
+        db.close()
+
+def _refund_withdrawal(db, wd: Withdrawal, reason: str):
+    # Refund only once
+    if wd.refunded == 1:
+        return
+
+    w = db.query(Wallet).filter(Wallet.user_id == wd.user_id).with_for_update().one()
+
+    # Move funds back: pending -> available
+    w.balance_pending = _round2(w.balance_pending - wd.amount_usd)
+    w.balance_available = _round2(w.balance_available + wd.amount_usd)
+
+    tx = Transaction(
+        user_id=wd.user_id,
+        type="withdrawal_refund",
+        amount=float(wd.amount_usd),
+        balance_after=float(w.balance_total),  # total unchanged on refund
+        reference=f"withdrawal:{wd.id}",
+    )
+    db.add(tx)
+
+    wd.refunded = 1
+    wd.status = "rejected"
+    wd.note = reason
+
+# --------------------------
+# Admin Withdrawals
+# --------------------------
+@app.get("/admin/withdrawals")
+def admin_withdrawals(limit: int = 50, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Withdrawal)
+            .order_by(Withdrawal.id.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return {"count": len(rows), "withdrawals": [_serialize_withdrawal(w) for w in rows]}
+    finally:
+        db.close()
+
+@app.get("/admin/withdrawals/{withdrawal_id}")
+def admin_withdrawal_get(withdrawal_id: int, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        w = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
+        if not w:
+            raise HTTPException(status_code=404, detail="Withdrawal not found")
+        return _serialize_withdrawal(w)
+    finally:
+        db.close()
+
+@app.post("/admin/withdrawals/{withdrawal_id}/approve")
+async def admin_withdrawal_approve(withdrawal_id: int, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    body = await request.json()
+    note = str(body.get("note", "")).strip() if isinstance(body, dict) else ""
+
+    db = SessionLocal()
+    try:
+        w = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
+        if not w:
+            raise HTTPException(status_code=404, detail="Withdrawal not found")
+        if w.status in ("completed", "rejected"):
+            raise HTTPException(status_code=400, detail=f"Cannot approve withdrawal in status '{w.status}'")
+
+        w.status = "approved"
+        if note:
+            w.note = note
+
+        db.commit()
+        return {"ok": True, "withdrawal_id": w.id, "status": w.status}
+    finally:
+        db.close()
+
+@app.post("/admin/withdrawals/{withdrawal_id}/mark_sent")
+async def admin_withdrawal_mark_sent(withdrawal_id: int, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    body = await request.json()
+    note = str(body.get("note", "")).strip() if isinstance(body, dict) else ""
+
+    db = SessionLocal()
+    try:
+        w = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
+        if not w:
+            raise HTTPException(status_code=404, detail="Withdrawal not found")
+        if w.status not in ("approved", "requested"):
+            raise HTTPException(status_code=400, detail=f"Cannot mark sent from status '{w.status}'")
+
+        w.status = "sent"
+        if note:
+            w.note = note
+
+        db.commit()
+        return {"ok": True, "withdrawal_id": w.id, "status": w.status}
+    finally:
+        db.close()
+
+@app.post("/admin/withdrawals/{withdrawal_id}/complete")
+async def admin_withdrawal_complete(withdrawal_id: int, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    """
+    FINALIZE payout:
+    pending -> reduced
+    total   -> reduced
+    """
+    _require_admin(x_admin_key)
+    body = await request.json()
+    note = str(body.get("note", "")).strip() if isinstance(body, dict) else ""
+
+    db = SessionLocal()
+    try:
+        wd = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
+        if not wd:
+            raise HTTPException(status_code=404, detail="Withdrawal not found")
+        if wd.status == "rejected":
+            raise HTTPException(status_code=400, detail="Cannot complete a rejected withdrawal")
+        if wd.status == "completed":
+            return {"ok": True, "withdrawal_id": wd.id, "status": "completed"}
+
+        _get_or_create_user_and_wallet(db, wd.user_id)
+        w = db.query(Wallet).filter(Wallet.user_id == wd.user_id).with_for_update().one()
+
+        w.balance_pending = _round2(w.balance_pending - wd.amount_usd)
+        w.balance_total = _round2(w.balance_total - wd.amount_usd)
+
+        if w.balance_pending < -0.000001:
+            raise HTTPException(status_code=500, detail="Wallet pending balance went negative (data mismatch)")
+
+        tx = Transaction(
+            user_id=wd.user_id,
+            type="withdrawal_complete",
+            amount=-float(wd.amount_usd),
+            balance_after=float(w.balance_total),
+            reference=f"withdrawal:{wd.id}",
+        )
+        db.add(tx)
+
+        wd.status = "completed"
+        if note:
+            wd.note = note
+
+        db.commit()
+        return {"ok": True, "withdrawal_id": wd.id, "status": wd.status, "balance_total": float(w.balance_total)}
+    finally:
+        db.close()
+
+@app.post("/admin/withdrawals/{withdrawal_id}/reject")
+async def admin_withdrawal_reject(withdrawal_id: int, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    """
+    Reject + refund:
+    pending -> available
+    total unchanged
+    """
+    _require_admin(x_admin_key)
+    body = await request.json()
+    reason = str(body.get("reason", "")).strip() if isinstance(body, dict) else ""
+    if not reason:
+        reason = "Withdrawal rejected by support"
+
+    db = SessionLocal()
+    try:
+        wd = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
+        if not wd:
+            raise HTTPException(status_code=404, detail="Withdrawal not found")
+        if wd.status == "completed":
+            raise HTTPException(status_code=400, detail="Cannot reject a completed withdrawal")
+
+        _get_or_create_user_and_wallet(db, wd.user_id)
+        _refund_withdrawal(db, wd, reason=reason)
+
+        db.commit()
+        return {"ok": True, "withdrawal_id": wd.id, "status": wd.status, "refunded": bool(wd.refunded)}
+    finally:
+        db.close()
+
+# --------------------------
+# Admin Deposits
+# --------------------------
+
+@app.get("/admin/deposits")
+def admin_deposits(limit: int = 50, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Deposit)
+            .order_by(Deposit.id.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return {"count": len(rows), "deposits": [_serialize_deposit(d) for d in rows]}
+    finally:
+        db.close()
+
+
+@app.get("/admin/deposits/{payment_id}")
+def admin_deposit_by_payment_id(payment_id: str, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        dep = db.query(Deposit).filter(Deposit.payment_id == payment_id).one_or_none()
+        if not dep:
+            raise HTTPException(status_code=404, detail="Deposit not found")
+        return _serialize_deposit(dep)
+    finally:
+        db.close()
+
+@app.get("/admin/deposits/user/{user_id}")
+def admin_user_deposits(user_id: str, limit: int = 50, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Deposit)
+            .filter(Deposit.user_id == user_id)
+            .order_by(Deposit.id.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return {"count": len(rows), "deposits": [_serialize_deposit(d) for d in rows]}
+    finally:
+        db.close()
+
+
+# --------------------------
+# Admin Transactions
+# --------------------------
+
+@app.get("/admin/transactions")
+def admin_transactions(limit: int = 100, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Transaction)
+            .order_by(Transaction.id.desc())
+            .limit(max(1, min(limit, 500)))
+            .all()
+        )
+        return {"count": len(rows), "transactions": [_serialize_tx(t) for t in rows]}
+    finally:
+        db.close()
+
+@app.get("/admin/transactions/user/{user_id}")
+def admin_transactions_user(user_id: str, limit: int = 100, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Transaction)
+            .filter(Transaction.user_id == user_id)
+            .order_by(Transaction.id.desc())
+            .limit(max(1, min(limit, 500)))
+            .all()
+        )
+        return {"user_id": user_id, "count": len(rows), "transactions": [_serialize_tx(t) for t in rows]}
+    finally:
+        db.close()
+
+@app.get("/admin/users/{user_id}/snapshot")
+def admin_user_snapshot(user_id: str, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+
+        w = db.query(Wallet).filter(Wallet.user_id == user_id).one()
+        deposits = (
+            db.query(Deposit)
+            .filter(Deposit.user_id == user_id)
+            .order_by(Deposit.id.desc())
+            .limit(10)
+            .all()
+        )
+        withdrawals = (
+            db.query(Withdrawal)
+            .filter(Withdrawal.user_id == user_id)
+            .order_by(Withdrawal.id.desc())
+            .limit(10)
+            .all()
+        )
+        txs = (
+            db.query(Transaction)
+            .filter(Transaction.user_id == user_id)
+            .order_by(Transaction.id.desc())
+            .limit(20)
+            .all()
+        )
+
+        active_withdrawals = [
+            _serialize_withdrawal(x)
+            for x in withdrawals
+            if x.status in ACTIVE_WITHDRAW_STATUSES
+        ]
+
+        return {
+            "user_id": user_id,
+            "wallet": _serialize_wallet(w),
+            "active_withdrawals": active_withdrawals,
+            "deposits_last_10": [_serialize_deposit(d) for d in deposits],
+            "withdrawals_last_10": [_serialize_withdrawal(wd) for wd in withdrawals],
+            "transactions_last_20": [_serialize_tx(t) for t in txs],
+        }
+    finally:
+        db.close()
+
+
+@app.get("/transactions/me")
+def my_transactions(limit: int = 100, authorization: str | None = Header(default=None)):
+    token = get_bearer_token(authorization)
+    payload = decode_token(token)
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Transaction)
+            .filter(Transaction.user_id == user_id)
+            .order_by(Transaction.id.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+
+        return {
+            "count": len(rows),
+            "transactions": [
+                {
+                    "id": t.id,
+                    "user_id": t.user_id,
+                    "type": t.type,
+                    "amount": float(t.amount) if t.amount is not None else None,
+                    "balance_after": float(t.balance_after) if t.balance_after is not None else None,
+                    "reference": t.reference,
+                    "created_at": str(t.created_at) if t.created_at else None,
+                }
+                for t in rows
+            ],
+        }
+    finally:
+        db.close()
+
+
+# ==========================
+# STUDIO: DICE (Option A - Instant)
+# ==========================
+import secrets
+import math
+from sqlalchemy import Boolean
+
+HOUSE_EDGE = float(os.getenv("DICE_HOUSE_EDGE", "1.0"))  # percent, e.g. 1.0 = 1%
+
+class DiceSeed(Base):
+    __tablename__ = "dice_seeds"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), unique=True, nullable=False)
+
+    server_seed = Column(Text, nullable=False)         # keep secret until rotated
+    server_seed_hash = Column(String(64), nullable=False)
+
+    client_seed = Column(Text, nullable=False, default="client_default")
+    nonce = Column(Integer, nullable=False, default=0)
+
+    # store previous server seed so we can reveal it after rotation (provably fair)
+    prev_server_seed = Column(Text, nullable=True)
+    prev_server_seed_hash = Column(String(64), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class DiceBet(Base):
+    __tablename__ = "dice_bets"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+
+    amount_usd = Column(Float, nullable=False)
+
+    # under / over
+    condition = Column(String(8), nullable=False)
+    target = Column(Float, nullable=False)
+
+    # results
+    roll = Column(Float, nullable=False)
+    win = Column(Boolean, nullable=False, default=False)
+    multiplier = Column(Float, nullable=False, default=0)
+    payout = Column(Float, nullable=False, default=0)
+
+    # fairness proof
+    server_seed_hash = Column(String(64), nullable=False)
+    client_seed = Column(Text, nullable=False)
+    nonce = Column(Integer, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+def _sha256_hex(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()
+
+def _get_or_create_dice_seed(db, user_id: str) -> DiceSeed:
+    row = db.query(DiceSeed).filter(DiceSeed.user_id == user_id).one_or_none()
+    if row:
+        return row
+
+    server_seed = secrets.token_hex(32)
+    row = DiceSeed(
+        user_id=user_id,
+        server_seed=server_seed,
+        server_seed_hash=_sha256_hex(server_seed),
+        client_seed="client_default",
+        nonce=0,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+def _dice_roll(server_seed: str, client_seed: str, nonce: int) -> float:
+    # Deterministic roll in [0.00, 99.99]
+    msg = f"{client_seed}:{nonce}"
+    h = hmac.new(server_seed.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    # take 52-ish bits and map to [0,1)
+    n = int(h[:13], 16)
+    r01 = n / float(2**52)
+    roll = math.floor(r01 * 10000) / 100.0  # 2 decimals
+    if roll >= 100:
+        roll = 99.99
+    return roll
+
+def _dice_multiplier(chance: float) -> float:
+    # multiplier = (100 - house_edge) / chance
+    effective = max(0.0, 100.0 - HOUSE_EDGE)
+    return effective / chance
+
+@app.get("/studio/dice/seed/{user_id}")
+def dice_get_seed(user_id: str):
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+        s = _get_or_create_dice_seed(db, user_id)
+        db.commit()
+        return {
+            "user_id": user_id,
+            "server_seed_hash": s.server_seed_hash,
+            "client_seed": s.client_seed,
+            "nonce_next": s.nonce + 1,
+            "house_edge_percent": HOUSE_EDGE,
+        }
+    finally:
+        db.close()
+
+@app.post("/studio/dice/seed/{user_id}/client")
+async def dice_set_client_seed(user_id: str, request: Request):
+    body = await request.json()
+    client_seed = str(body.get("client_seed", "")).strip()
+    if not client_seed:
+        raise HTTPException(status_code=400, detail="client_seed required")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+        s = _get_or_create_dice_seed(db, user_id)
+        s.client_seed = client_seed
+        db.commit()
+        return {"ok": True, "user_id": user_id, "client_seed": s.client_seed}
+    finally:
+        db.close()
+
+@app.post("/studio/dice/seed/{user_id}/rotate")
+def dice_rotate_server_seed(user_id: str):
+    """
+    Rotates server seed and REVEALS the previous one (provably fair).
+    """
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+
+        s = db.query(DiceSeed).filter(DiceSeed.user_id == user_id).with_for_update().one_or_none()
+        if not s:
+            s = _get_or_create_dice_seed(db, user_id)
+
+        # move current -> prev (revealable)
+        s.prev_server_seed = s.server_seed
+        s.prev_server_seed_hash = s.server_seed_hash
+
+        # generate new server seed
+        new_seed = secrets.token_hex(32)
+        s.server_seed = new_seed
+        s.server_seed_hash = _sha256_hex(new_seed)
+        s.nonce = 0
+
+        db.commit()
+        return {
+            "ok": True,
+            "user_id": user_id,
+            "new_server_seed_hash": s.server_seed_hash,
+            "revealed_prev_server_seed": s.prev_server_seed,
+            "revealed_prev_server_seed_hash": s.prev_server_seed_hash,
+            "client_seed": s.client_seed,
+            "nonce_reset_to": 0,
+        }
+    finally:
+        db.close()
+
+@app.post("/studio/dice/bet")
+async def dice_bet(request: Request):
+    """
+    Instant dice bet.
+    Body:
+      user_id, amount_usd, condition ("under"|"over"), target (float), optional client_seed
+    """
+    body = await request.json()
+    user_id = str(body.get("user_id", "")).strip()
+    amount = float(body.get("amount_usd", 0))
+    condition = str(body.get("condition", "")).lower().strip()
+    target = float(body.get("target", 0))
+    client_seed_override = str(body.get("client_seed", "")).strip()
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
+    if condition not in ("under", "over"):
+        raise HTTPException(status_code=400, detail="condition must be 'under' or 'over'")
+    if target <= 0 or target >= 100:
+        raise HTTPException(status_code=400, detail="target must be between 0 and 100 (exclusive)")
+
+    # Chance and win logic
+    if condition == "under":
+        chance = target
+    else:
+        chance = 100.0 - target
+
+    if chance <= 0:
+        raise HTTPException(status_code=400, detail="Invalid chance")
+
+    multiplier = _dice_multiplier(chance)
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+        _get_or_create_dice_seed(db, user_id)
+
+        # Lock wallet and seed row to keep nonce + balances consistent
+        w = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
+        s = db.query(DiceSeed).filter(DiceSeed.user_id == user_id).with_for_update().one()
+
+        if client_seed_override:
+            s.client_seed = client_seed_override
+
+        if float(w.balance_available) < amount:
+            raise HTTPException(status_code=400, detail="Insufficient balance")
+
+        # Debit immediately (instant game)
+        w.balance_available = _round2(w.balance_available - amount)
+        w.balance_total = _round2(w.balance_total - amount)
+
+        tx1 = Transaction(
+            user_id=user_id,
+            type="dice_bet",
+            amount=-float(amount),
+            balance_after=float(w.balance_total),
+            reference=None,
+        )
+        db.add(tx1)
+
+        # increment nonce and roll
+        s.nonce += 1
+        roll = _dice_roll(s.server_seed, s.client_seed, s.nonce)
+
+        if condition == "under":
+            win = roll < target
+        else:
+            win = roll > target
+
+        payout = 0.0
+        if win:
+            payout = _round2(amount * multiplier)
+            w.balance_total = _round2(w.balance_total + payout)
+            w.balance_available = _round2(w.balance_available + payout)
+
+            tx2 = Transaction(
+                user_id=user_id,
+                type="dice_payout",
+                amount=float(payout),
+                balance_after=float(w.balance_total),
+                reference=None,
+            )
+            db.add(tx2)
+
+        bet = DiceBet(
+            user_id=user_id,
+            amount_usd=float(amount),
+            condition=condition,
+            target=float(target),
+            roll=float(roll),
+            win=bool(win),
+            multiplier=float(multiplier),
+            payout=float(payout),
+            server_seed_hash=s.server_seed_hash,
+            client_seed=s.client_seed,
+            nonce=int(s.nonce),
+        )
+        db.add(bet)
+        db.flush()
+
+        # Fill references after bet id exists
+        tx1.reference = f"dice_bet:{bet.id}"
+        if win:
+            tx2.reference = f"dice_bet:{bet.id}"  # type: ignore[name-defined]
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "bet_id": bet.id,
+            "user_id": user_id,
+            "amount_usd": float(amount),
+            "condition": condition,
+            "target": float(target),
+            "roll": float(roll),
+            "win": bool(win),
+            "multiplier": float(multiplier),
+            "payout": float(payout),
+            "server_seed_hash": s.server_seed_hash,
+            "client_seed": s.client_seed,
+            "nonce": int(s.nonce),
+            "wallet": _serialize_wallet(w),
+        }
+    finally:
+        db.close()
+
+@app.get("/studio/dice/bets/{user_id}")
+def dice_bets(user_id: str, limit: int = 50):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(DiceBet)
+            .filter(DiceBet.user_id == user_id)
+            .order_by(DiceBet.id.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return {
+            "user_id": user_id,
+            "count": len(rows),
+            "bets": [
+                {
+                    "id": b.id,
+                    "amount_usd": float(b.amount_usd),
+                    "condition": b.condition,
+                    "target": float(b.target),
+                    "roll": float(b.roll),
+                    "win": bool(b.win),
+                    "multiplier": float(b.multiplier),
+                    "payout": float(b.payout),
+                    "server_seed_hash": b.server_seed_hash,
+                    "client_seed": b.client_seed,
+                    "nonce": int(b.nonce),
+                    "created_at": str(b.created_at),
+                }
+                for b in rows
+            ],
+        }
+    finally:
+        db.close()
+
+
+# ==========================
+# STUDIO: DICE (Option A - Instant)
+# ==========================
+import secrets
+import math
+from sqlalchemy import Boolean
+
+HOUSE_EDGE = float(os.getenv("DICE_HOUSE_EDGE", "1.0"))  # percent, e.g. 1.0 = 1%
+
+
+@app.get("/studio/dice/fair/{user_id}")
+def dice_fair_state(user_id: str):
+    db = SessionLocal()
+    try:
+        s = db.query(DiceSeed).filter(DiceSeed.user_id == user_id).one_or_none()
+        if not s:
+            raise HTTPException(status_code=404, detail="Dice seed not found for user")
+
+        return {
+            "user_id": user_id,
+            "current_server_seed_hash": s.server_seed_hash,
+            "current_client_seed": s.client_seed,
+            "current_nonce": s.nonce,
+            "revealed_prev_server_seed": s.prev_server_seed,
+            "revealed_prev_server_seed_hash": s.prev_server_seed_hash,
+        }
+    finally:
+        db.close()
+
+@app.post("/studio/dice/verify")
+async def dice_verify(request: Request):
+    """
+    Verify a roll from revealed server seed + client seed + nonce.
+    Body:
+    {
+      "server_seed": "...",
+      "client_seed": "...",
+      "nonce": 1
+    }
+    """
+    body = await request.json()
+
+    server_seed = str(body.get("server_seed", "")).strip()
+    client_seed = str(body.get("client_seed", "")).strip()
+    nonce = int(body.get("nonce", 0))
+
+    if not server_seed:
+        raise HTTPException(status_code=400, detail="server_seed required")
+    if not client_seed:
+        raise HTTPException(status_code=400, detail="client_seed required")
+    if nonce <= 0:
+        raise HTTPException(status_code=400, detail="nonce must be >= 1")
+
+    roll = _dice_roll(server_seed, client_seed, nonce)
+    server_seed_hash = _sha256_hex(server_seed)
+
+    return {
+        "ok": True,
+        "server_seed_hash": server_seed_hash,
+        "client_seed": client_seed,
+        "nonce": nonce,
+        "roll": roll,
+    }
+
+
+# ==========================
+# STUDIO: CRASH (Step 1 - Models + Seed State)
+# ==========================
+class CrashSeed(Base):
+    __tablename__ = "crash_seeds"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), unique=True, nullable=False)
+
+    server_seed = Column(Text, nullable=False)
+    server_seed_hash = Column(String(64), nullable=False)
+
+    client_seed = Column(Text, nullable=False, default="client_default")
+    nonce = Column(Integer, nullable=False, default=0)
+
+    prev_server_seed = Column(Text, nullable=True)
+    prev_server_seed_hash = Column(String(64), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class CrashRound(Base):
+    __tablename__ = "crash_rounds"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+
+    server_seed_hash = Column(String(64), nullable=False)
+    client_seed = Column(Text, nullable=False)
+    nonce = Column(Integer, nullable=False)
+
+    crash_point = Column(Float, nullable=False)
+
+    status = Column(String(32), nullable=False, default="created")  # created, running, crashed, completed
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class CrashBet(Base):
+    __tablename__ = "crash_bets"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+    round_id = Column(Integer, ForeignKey("crash_rounds.id"), nullable=False)
+
+    amount_usd = Column(Float, nullable=False)
+    auto_cashout = Column(Float, nullable=True)
+
+    status = Column(String(32), nullable=False, default="active")  # active, cashed_out, lost
+    cashout_multiplier = Column(Float, nullable=True)
+    payout = Column(Float, nullable=False, default=0)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+def _get_or_create_crash_seed(db, user_id: str) -> CrashSeed:
+    row = db.query(CrashSeed).filter(CrashSeed.user_id == user_id).one_or_none()
+    if row:
+        return row
+
+    server_seed = secrets.token_hex(32)
+    row = CrashSeed(
+        user_id=user_id,
+        server_seed=server_seed,
+        server_seed_hash=_sha256_hex(server_seed),
+        client_seed="client_default",
+        nonce=0,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+@app.get("/studio/crash/seed/{user_id}")
+def crash_get_seed(user_id: str):
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+        s = _get_or_create_crash_seed(db, user_id)
+        db.commit()
+        return {
+            "user_id": user_id,
+            "server_seed_hash": s.server_seed_hash,
+            "client_seed": s.client_seed,
+            "nonce_next": s.nonce + 1,
+            "revealed_prev_server_seed": s.prev_server_seed,
+            "revealed_prev_server_seed_hash": s.prev_server_seed_hash,
+        }
+    finally:
+        db.close()
+
+@app.post("/studio/crash/seed/{user_id}/client")
+async def crash_set_client_seed(user_id: str, request: Request):
+    body = await request.json()
+    client_seed = str(body.get("client_seed", "")).strip()
+    if not client_seed:
+        raise HTTPException(status_code=400, detail="client_seed required")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+        s = _get_or_create_crash_seed(db, user_id)
+        s.client_seed = client_seed
+        db.commit()
+        return {"ok": True, "user_id": user_id, "client_seed": s.client_seed}
+    finally:
+        db.close()
+
+@app.post("/studio/crash/seed/{user_id}/rotate")
+def crash_rotate_server_seed(user_id: str):
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+
+        s = db.query(CrashSeed).filter(CrashSeed.user_id == user_id).with_for_update().one_or_none()
+        if not s:
+            s = _get_or_create_crash_seed(db, user_id)
+
+        s.prev_server_seed = s.server_seed
+        s.prev_server_seed_hash = s.server_seed_hash
+
+        new_seed = secrets.token_hex(32)
+        s.server_seed = new_seed
+        s.server_seed_hash = _sha256_hex(new_seed)
+        s.nonce = 0
+
+        db.commit()
+        return {
+            "ok": True,
+            "user_id": user_id,
+            "new_server_seed_hash": s.server_seed_hash,
+            "revealed_prev_server_seed": s.prev_server_seed,
+            "revealed_prev_server_seed_hash": s.prev_server_seed_hash,
+            "client_seed": s.client_seed,
+            "nonce_reset_to": 0,
+        }
+    finally:
+        db.close()
+
+@app.get("/studio/crash/rounds/{user_id}")
+def crash_rounds(user_id: str, limit: int = 50):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(CrashRound)
+            .filter(CrashRound.user_id == user_id)
+            .order_by(CrashRound.id.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return {
+            "user_id": user_id,
+            "count": len(rows),
+            "rounds": [
+                {
+                    "id": r.id,
+                    "server_seed_hash": r.server_seed_hash,
+                    "client_seed": r.client_seed,
+                    "nonce": r.nonce,
+                    "crash_point": float(r.crash_point),
+                    "status": r.status,
+                    "started_at": str(r.started_at) if r.started_at else None,
+                    "ended_at": str(r.ended_at) if r.ended_at else None,
+                    "created_at": str(r.created_at),
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        db.close()
+
+
+
+def _crash_point_from_seed(server_seed: str, client_seed: str, nonce: int) -> float:
+    """
+    Simple provably-fair crash formula for MVP.
+    Produces a crash point >= 1.00
+    """
+    msg = f"{client_seed}:{nonce}"
+    h = hmac.new(server_seed.encode(), msg.encode(), hashlib.sha256).hexdigest()
+
+    n = int(h[:13], 16)
+    r = n / float(2**52)
+
+    # House edge built in lightly through formula shape
+    # Keep crash point in a sane range for MVP
+    if r >= 0.9999:
+        return 100.0
+
+    point = 0.99 / (1.0 - r)
+    point = max(1.0, min(point, 100.0))
+    return round(point, 2)
+
+
+def _crash_elapsed_seconds(started_at) -> float:
+    from datetime import datetime, timezone
+
+    if not started_at:
+        return 0.0
+
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+
+    now = datetime.now(timezone.utc)
+    return max(0.0, (now - started_at).total_seconds())
+
+
+def _crash_live_multiplier_from_elapsed(elapsed_seconds: float) -> float:
+    """
+    Live crash pacing curve for MVP.
+    ~1.38x at 2s, ~1.90x at 4s, ~2.61x at 6s, ~4.95x at 10s
+    """
+    value = math.exp(elapsed_seconds * 0.16)
+    return round(max(1.0, value), 2)
+
+
+def _crash_round_live_state(round_row) -> dict:
+    round_status = str(round_row.status or "running").lower()
+
+    if round_status == "completed":
+        return {
+            "round_id": round_row.id,
+            "status": "completed",
+            "current_multiplier": float(round_row.crash_point),
+            "crash_point": float(round_row.crash_point),
+            "crashed": False,
+            "elapsed_seconds": _crash_elapsed_seconds(round_row.started_at),
+        }
+
+    if round_status == "crashed":
+        return {
+            "round_id": round_row.id,
+            "status": "crashed",
+            "current_multiplier": float(round_row.crash_point),
+            "crash_point": float(round_row.crash_point),
+            "crashed": True,
+            "elapsed_seconds": _crash_elapsed_seconds(round_row.started_at),
+        }
+
+    elapsed_seconds = _crash_elapsed_seconds(round_row.started_at)
+    live_multiplier = _crash_live_multiplier_from_elapsed(elapsed_seconds)
+    crash_point = float(round_row.crash_point)
+    crashed = live_multiplier >= crash_point
+
+    return {
+        "round_id": round_row.id,
+        "status": "crashed" if crashed else "running",
+        "current_multiplier": crash_point if crashed else live_multiplier,
+        "crash_point": crash_point,
+        "crashed": crashed,
+        "elapsed_seconds": elapsed_seconds,
+    }
+
+
+def _crash_settle_round_if_needed(db, round_row):
+    live = _crash_round_live_state(round_row)
+
+    if str(round_row.status or "").lower() in ("completed", "crashed"):
+        return live
+
+    bet = (
+        db.query(CrashBet)
+        .filter(CrashBet.round_id == round_row.id)
+        .order_by(CrashBet.id.desc())
+        .one_or_none()
+    )
+
+    if not bet:
+        return live
+
+    # Auto cashout wins before crash
+    if (
+        bet.status == "active"
+        and bet.auto_cashout is not None
+        and float(bet.auto_cashout) <= float(round_row.crash_point)
+        and live["current_multiplier"] >= float(bet.auto_cashout)
+        and not live["crashed"]
+    ):
+        wallet = db.query(Wallet).filter(Wallet.user_id == bet.user_id).with_for_update().one()
+
+        payout = _round2(float(bet.amount_usd) * float(bet.auto_cashout))
+
+        wallet.balance_total = _round2(wallet.balance_total + payout)
+        wallet.balance_available = _round2(wallet.balance_available + payout)
+
+        bet.status = "cashed_out"
+        bet.cashout_multiplier = float(bet.auto_cashout)
+        bet.payout = payout
+
+        round_row.status = "completed"
+        round_row.ended_at = func.now()
+
+        tx = Transaction(
+            user_id=bet.user_id,
+            type="crash_payout",
+            amount=float(payout),
+            balance_after=float(wallet.balance_total),
+            reference=f"crash_bet:{bet.id}",
+        )
+        db.add(tx)
+
+        return _crash_round_live_state(round_row)
+
+    # If crash point has been reached, unresolved active bet loses
+    if bet.status == "active" and live["crashed"]:
+        bet.status = "lost"
+        bet.cashout_multiplier = None
+        bet.payout = 0.0
+
+        round_row.status = "crashed"
+        round_row.ended_at = func.now()
+
+        return _crash_round_live_state(round_row)
+
+    return live
+
+
+@app.get("/studio/crash/live/{round_id}")
+def crash_live_round(round_id: int):
+    db = SessionLocal()
+    try:
+        round_row = (
+            db.query(CrashRound)
+            .filter(CrashRound.id == round_id)
+            .with_for_update()
+            .one_or_none()
+        )
+        if not round_row:
+            raise HTTPException(status_code=404, detail="Crash round not found")
+
+        live = _crash_settle_round_if_needed(db, round_row)
+        db.commit()
+
+        bet = (
+            db.query(CrashBet)
+            .filter(CrashBet.round_id == round_id)
+            .order_by(CrashBet.id.desc())
+            .one_or_none()
+        )
+
+        return {
+            "ok": True,
+            "round_id": round_row.id,
+            "user_id": round_row.user_id,
+            "status": str(round_row.status),
+            "current_multiplier": float(live["current_multiplier"]),
+            "crash_point": float(round_row.crash_point),
+            "crashed": bool(live["crashed"]),
+            "elapsed_seconds": float(live["elapsed_seconds"]),
+            "server_seed_hash": round_row.server_seed_hash,
+            "client_seed": round_row.client_seed,
+            "nonce": round_row.nonce,
+            "started_at": str(round_row.started_at) if round_row.started_at else None,
+            "ended_at": str(round_row.ended_at) if round_row.ended_at else None,
+            "bet": {
+                "id": bet.id,
+                "user_id": bet.user_id,
+                "amount_usd": float(bet.amount_usd),
+                "auto_cashout": float(bet.auto_cashout) if bet.auto_cashout is not None else None,
+                "status": str(bet.status),
+                "cashout_multiplier": float(bet.cashout_multiplier) if bet.cashout_multiplier is not None else None,
+                "payout": float(bet.payout),
+                "created_at": str(bet.created_at),
+            } if bet else None,
+        }
+    finally:
+        db.close()
+
+
+@app.post("/studio/crash/bet")
+async def crash_bet(request: Request):
+    """
+    Body:
+    {
+      "user_id":"user_1",
+      "amount_usd":1,
+      "auto_cashout": 1.50   # optional
+    }
+    """
+    body = await request.json()
+
+    user_id = str(body.get("user_id", "")).strip()
+    amount = float(body.get("amount_usd", 0))
+    auto_cashout = body.get("auto_cashout", None)
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
+
+    if auto_cashout is not None:
+        auto_cashout = float(auto_cashout)
+        if auto_cashout <= 1.0:
+            raise HTTPException(status_code=400, detail="auto_cashout must be > 1.0")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+        _get_or_create_crash_seed(db, user_id)
+
+        wallet = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
+        seed = db.query(CrashSeed).filter(CrashSeed.user_id == user_id).with_for_update().one()
+
+        if float(wallet.balance_available) < amount:
+            raise HTTPException(status_code=400, detail="Insufficient balance")
+
+        # debit stake immediately
+        wallet.balance_total = _round2(wallet.balance_total - amount)
+        wallet.balance_available = _round2(wallet.balance_available - amount)
+
+        tx1 = Transaction(
+            user_id=user_id,
+            type="crash_bet",
+            amount=-float(amount),
+            balance_after=float(wallet.balance_total),
+            reference=None,
+        )
+        db.add(tx1)
+
+        # advance seed nonce and create a live round
+        seed.nonce += 1
+        crash_point = _crash_point_from_seed(seed.server_seed, seed.client_seed, seed.nonce)
+
+        round_row = CrashRound(
+            user_id=user_id,
+            server_seed_hash=seed.server_seed_hash,
+            client_seed=seed.client_seed,
+            nonce=seed.nonce,
+            crash_point=crash_point,
+            status="running",
+            started_at=func.now(),
+        )
+        db.add(round_row)
+        db.flush()
+
+        bet = CrashBet(
+            user_id=user_id,
+            round_id=round_row.id,
+            amount_usd=float(amount),
+            auto_cashout=auto_cashout,
+            status="active",
+            cashout_multiplier=None,
+            payout=0,
+        )
+        db.add(bet)
+        db.flush()
+
+        tx1.reference = f"crash_bet:{bet.id}"
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "round_id": round_row.id,
+            "bet_id": bet.id,
+            "user_id": user_id,
+            "amount_usd": amount,
+            "auto_cashout": auto_cashout,
+            "crash_point": None,  # hidden until round resolves
+            "status": bet.status,
+            "payout": float(bet.payout),
+            "server_seed_hash": seed.server_seed_hash,
+            "client_seed": seed.client_seed,
+            "nonce": seed.nonce,
+            "wallet": _serialize_wallet(wallet),
+        }
+    finally:
+        db.close()
+
+@app.post("/studio/crash/cashout/{bet_id}")
+def crash_manual_cashout(bet_id: int):
+    db = SessionLocal()
+    try:
+        bet = db.query(CrashBet).filter(CrashBet.id == bet_id).with_for_update().one_or_none()
+        if not bet:
+            raise HTTPException(status_code=404, detail="Crash bet not found")
+
+        round_row = db.query(CrashRound).filter(CrashRound.id == bet.round_id).with_for_update().one()
+        wallet = db.query(Wallet).filter(Wallet.user_id == bet.user_id).with_for_update().one()
+
+        live = _crash_settle_round_if_needed(db, round_row)
+
+        if bet.status != "active":
+            db.commit()
+            return {
+                "ok": True,
+                "bet_id": bet.id,
+                "status": bet.status,
+                "cashout_multiplier": float(bet.cashout_multiplier) if bet.cashout_multiplier is not None else None,
+                "crash_point": float(round_row.crash_point),
+                "payout": float(bet.payout),
+                "wallet": _serialize_wallet(wallet),
+            }
+
+        if live["crashed"]:
+            bet.status = "lost"
+            bet.cashout_multiplier = None
+            bet.payout = 0.0
+
+            round_row.status = "crashed"
+            round_row.ended_at = func.now()
+
+            db.commit()
+            return {
+                "ok": True,
+                "bet_id": bet.id,
+                "status": bet.status,
+                "crash_point": float(round_row.crash_point),
+                "payout": 0.0,
+                "wallet": _serialize_wallet(wallet),
+            }
+
+        manual_cashout_multiplier = float(live["current_multiplier"])
+        payout = _round2(float(bet.amount_usd) * manual_cashout_multiplier)
+
+        wallet.balance_total = _round2(wallet.balance_total + payout)
+        wallet.balance_available = _round2(wallet.balance_available + payout)
+
+        bet.status = "cashed_out"
+        bet.cashout_multiplier = manual_cashout_multiplier
+        bet.payout = payout
+
+        round_row.status = "completed"
+        round_row.ended_at = func.now()
+
+        tx = Transaction(
+            user_id=bet.user_id,
+            type="crash_payout",
+            amount=float(payout),
+            balance_after=float(wallet.balance_total),
+            reference=f"crash_bet:{bet.id}",
+        )
+        db.add(tx)
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "bet_id": bet.id,
+            "status": bet.status,
+            "cashout_multiplier": manual_cashout_multiplier,
+            "crash_point": float(round_row.crash_point),
+            "payout": float(payout),
+            "wallet": _serialize_wallet(wallet),
+        }
+    finally:
+        db.close()
+
+@app.post("/studio/crash/resolve/{bet_id}")
+def crash_resolve_unfinished(bet_id: int):
+    """
+    Finalize an active manual-cashout bet only if the live round has already crashed.
+    """
+    db = SessionLocal()
+    try:
+        bet = db.query(CrashBet).filter(CrashBet.id == bet_id).with_for_update().one_or_none()
+        if not bet:
+            raise HTTPException(status_code=404, detail="Crash bet not found")
+
+        round_row = db.query(CrashRound).filter(CrashRound.id == bet.round_id).with_for_update().one()
+
+        live = _crash_settle_round_if_needed(db, round_row)
+
+        if bet.status != "active":
+            db.commit()
+            return {
+                "ok": True,
+                "bet_id": bet.id,
+                "status": bet.status,
+                "payout": float(bet.payout),
+                "crash_point": float(round_row.crash_point),
+            }
+
+        if not live["crashed"]:
+            db.commit()
+            return {
+                "ok": True,
+                "bet_id": bet.id,
+                "status": "running",
+                "current_multiplier": float(live["current_multiplier"]),
+                "crash_point": None,
+                "payout": float(bet.payout),
+            }
+
+        bet.status = "lost"
+        bet.cashout_multiplier = None
+        bet.payout = 0.0
+
+        round_row.status = "crashed"
+        round_row.ended_at = func.now()
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "bet_id": bet.id,
+            "status": bet.status,
+            "crash_point": float(round_row.crash_point),
+            "payout": 0.0,
+        }
+    finally:
+        db.close()
+
+@app.get("/studio/crash/bets/{user_id}")
+def crash_bets(user_id: str, limit: int = 50):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(CrashBet)
+            .filter(CrashBet.user_id == user_id)
+            .order_by(CrashBet.id.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return {
+            "user_id": user_id,
+            "count": len(rows),
+            "bets": [
+                {
+                    "id": b.id,
+                    "round_id": b.round_id,
+                    "amount_usd": float(b.amount_usd),
+                    "auto_cashout": float(b.auto_cashout) if b.auto_cashout is not None else None,
+                    "status": b.status,
+                    "cashout_multiplier": float(b.cashout_multiplier) if b.cashout_multiplier is not None else None,
+                    "payout": float(b.payout),
+                    "created_at": str(b.created_at),
+                }
+                for b in rows
+            ],
+        }
+    finally:
+        db.close()
+
+
+
+
+# ==========================
+# GLOBAL CRASH V2 RUNTIME
+# ==========================
+
+def _utcnow():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
+
+
+def _ensure_aware(dt):
+    from datetime import timezone
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _global_crash_live_multiplier_from_elapsed(elapsed_seconds: float) -> float:
+    """
+    Smooth crash pacing:
+    ~1.38x at 2s, ~1.90x at 4s, ~2.61x at 6s, ~4.95x at 10s
+    """
+    value = math.exp(max(0.0, elapsed_seconds) * 0.16)
+    return round(max(1.0, value), 2)
+
+
+def _global_crash_round_state(round_row) -> dict:
+    now = _utcnow()
+    starts_at = _ensure_aware(round_row.starts_at)
+    crashed_at = _ensure_aware(round_row.crashed_at)
+
+    status = str(round_row.status or "betting").lower()
+
+    if status == "betting":
+        seconds_until_start = max(0.0, (starts_at - now).total_seconds()) if starts_at else 0.0
+        return {
+            "status": "betting",
+            "current_multiplier": 1.0,
+            "seconds_until_start": seconds_until_start,
+            "elapsed_seconds": 0.0,
+            "crashed": False,
+        }
+
+    if status == "crashed":
+        return {
+            "status": "crashed",
+            "current_multiplier": float(round_row.crash_point),
+            "seconds_until_start": 0.0,
+            "elapsed_seconds": max(0.0, (_ensure_aware(crashed_at) - starts_at).total_seconds()) if crashed_at and starts_at else 0.0,
+            "crashed": True,
+        }
+
+    elapsed_seconds = max(0.0, (now - starts_at).total_seconds()) if starts_at else 0.0
+    live_multiplier = _global_crash_live_multiplier_from_elapsed(elapsed_seconds)
+    crash_point = float(round_row.crash_point)
+    crashed = live_multiplier >= crash_point
+
+    return {
+        "status": "crashed" if crashed else "running",
+        "current_multiplier": crash_point if crashed else live_multiplier,
+        "seconds_until_start": 0.0,
+        "elapsed_seconds": elapsed_seconds,
+        "crashed": crashed,
+    }
+
+
+def _get_or_create_global_crash_seed(db):
+    return _get_or_create_crash_seed(db, GLOBAL_CRASH_ENGINE_USER)
+
+
+def _global_crash_create_betting_round(db):
+    from datetime import timedelta
+
+    seed = _get_or_create_global_crash_seed(db)
+
+    seed.nonce += 1
+    crash_point = _crash_point_from_seed(seed.server_seed, seed.client_seed, seed.nonce)
+
+    now = _utcnow()
+    starts_at = now + timedelta(seconds=GLOBAL_CRASH_BETTING_SECONDS)
+
+    round_row = GlobalCrashRound(
+        server_seed_hash=seed.server_seed_hash,
+        client_seed=seed.client_seed,
+        nonce=seed.nonce,
+        crash_point=crash_point,
+        status="betting",
+        betting_started_at=now,
+        starts_at=starts_at,
+    )
+    db.add(round_row)
+    db.flush()
+    return round_row
+
+
+def _global_crash_settle_auto_cashouts(db, round_row, current_multiplier: float):
+    bets = (
+        db.query(GlobalCrashBet)
+        .filter(
+            GlobalCrashBet.round_id == round_row.id,
+            GlobalCrashBet.status == "active",
+            GlobalCrashBet.auto_cashout.isnot(None),
+        )
+        .with_for_update()
+        .all()
+    )
+
+    for bet in bets:
+        target = float(bet.auto_cashout)
+        if target <= float(current_multiplier) and target < float(round_row.crash_point):
+            wallet = db.query(Wallet).filter(Wallet.user_id == bet.user_id).with_for_update().one()
+
+            payout = _round2(float(bet.amount_usd) * target)
+
+            wallet.balance_total = _round2(wallet.balance_total + payout)
+            wallet.balance_available = _round2(wallet.balance_available + payout)
+
+            bet.status = "cashed_out"
+            bet.cashout_multiplier = target
+            bet.payout = payout
+            bet.settled_at = _utcnow()
+
+            tx = Transaction(
+                user_id=bet.user_id,
+                type="crash_payout",
+                amount=float(payout),
+                balance_after=float(wallet.balance_total),
+                reference=f"global_crash_bet:{bet.id}",
+            )
+            db.add(tx)
+
+
+def _global_crash_settle_losses(db, round_row):
+    bets = (
+        db.query(GlobalCrashBet)
+        .filter(
+            GlobalCrashBet.round_id == round_row.id,
+            GlobalCrashBet.status == "active",
+        )
+        .with_for_update()
+        .all()
+    )
+
+    for bet in bets:
+        bet.status = "lost"
+        bet.cashout_multiplier = None
+        bet.payout = 0.0
+        bet.settled_at = _utcnow()
+
+
+def _global_crash_engine_tick():
+    db = SessionLocal()
+    try:
+        from datetime import timedelta
+
+        round_row = db.query(GlobalCrashRound).order_by(GlobalCrashRound.id.desc()).with_for_update().first()
+
+        if not round_row:
+            _global_crash_create_betting_round(db)
+            db.commit()
+            return
+
+        state = _global_crash_round_state(round_row)
+        now = _utcnow()
+        status = str(round_row.status or "betting").lower()
+
+        if status == "betting":
+            starts_at = _ensure_aware(round_row.starts_at)
+            if starts_at and now >= starts_at:
+                round_row.status = "running"
+                db.commit()
+            else:
+                db.commit()
+            return
+
+        if status == "running":
+            _global_crash_settle_auto_cashouts(db, round_row, float(state["current_multiplier"]))
+
+            state = _global_crash_round_state(round_row)
+            if state["crashed"]:
+                round_row.status = "crashed"
+                round_row.crashed_at = now
+                round_row.ended_at = now
+                round_row.cooldown_until = now + timedelta(seconds=GLOBAL_CRASH_COOLDOWN_SECONDS)
+                _global_crash_settle_losses(db, round_row)
+
+            db.commit()
+            return
+
+        if status == "crashed":
+            cooldown_until = _ensure_aware(round_row.cooldown_until)
+            if cooldown_until and now >= cooldown_until:
+                _global_crash_create_betting_round(db)
+            db.commit()
+            return
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _global_crash_engine_loop():
+    while True:
+        try:
+            _global_crash_engine_tick()
+        except Exception as e:
+            print("GLOBAL CRASH ENGINE ERROR:", e)
+        time.sleep(GLOBAL_CRASH_TICK_SECONDS)
+
+
+@app.on_event("startup")
+def start_global_crash_engine():
+    global GLOBAL_CRASH_ENGINE_STARTED
+
+    if GLOBAL_CRASH_ENGINE_STARTED:
+        return
+
+    GLOBAL_CRASH_ENGINE_STARTED = True
+
+    import threading
+    t = threading.Thread(target=_global_crash_engine_loop, daemon=True)
+    t.start()
+
+
+@app.get("/studio/crash-global/current")
+def crash_global_current():
+    db = SessionLocal()
+    try:
+        round_row = db.query(GlobalCrashRound).order_by(GlobalCrashRound.id.desc()).first()
+        if not round_row:
+            raise HTTPException(status_code=404, detail="No global crash round found")
+
+        state = _global_crash_round_state(round_row)
+
+        return {
+            "ok": True,
+            "round": {
+                "id": round_row.id,
+                "status": str(state["status"]),
+                "current_multiplier": float(state["current_multiplier"]),
+                "seconds_until_start": float(state["seconds_until_start"]),
+                "elapsed_seconds": float(state["elapsed_seconds"]),
+                "crashed": bool(state["crashed"]),
+                "server_seed_hash": round_row.server_seed_hash,
+                "client_seed": round_row.client_seed,
+                "nonce": round_row.nonce,
+                "crash_point": float(round_row.crash_point) if state["crashed"] else None,
+                "betting_started_at": str(round_row.betting_started_at) if round_row.betting_started_at else None,
+                "starts_at": str(round_row.starts_at) if round_row.starts_at else None,
+                "crashed_at": str(round_row.crashed_at) if round_row.crashed_at else None,
+                "cooldown_until": str(round_row.cooldown_until) if round_row.cooldown_until else None,
+                "ended_at": str(round_row.ended_at) if round_row.ended_at else None,
+            }
+        }
+    finally:
+        db.close()
+
+
+@app.post("/studio/crash-global/bet")
+async def crash_global_bet(request: Request):
+    body = await request.json()
+
+    user_id = str(body.get("user_id", "")).strip()
+    amount = float(body.get("amount_usd", 0))
+    auto_cashout = body.get("auto_cashout", None)
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
+
+    if auto_cashout is not None:
+        auto_cashout = float(auto_cashout)
+        if auto_cashout <= 1.0:
+            raise HTTPException(status_code=400, detail="auto_cashout must be > 1.0")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+
+        round_row = db.query(GlobalCrashRound).order_by(GlobalCrashRound.id.desc()).with_for_update().first()
+        if not round_row:
+            raise HTTPException(status_code=400, detail="No active global crash round")
+        if str(round_row.status or "").lower() != "betting":
+            raise HTTPException(status_code=400, detail="Betting window is closed")
+
+        wallet = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
+
+        if float(wallet.balance_available) < amount:
+            raise HTTPException(status_code=400, detail="Insufficient balance")
+
+        wallet.balance_total = _round2(wallet.balance_total - amount)
+        wallet.balance_available = _round2(wallet.balance_available - amount)
+
+        tx1 = Transaction(
+            user_id=user_id,
+            type="crash_bet",
+            amount=-float(amount),
+            balance_after=float(wallet.balance_total),
+            reference=None,
+        )
+        db.add(tx1)
+
+        bet = GlobalCrashBet(
+            user_id=user_id,
+            round_id=round_row.id,
+            amount_usd=float(amount),
+            auto_cashout=auto_cashout,
+            status="active",
+            cashout_multiplier=None,
+            payout=0.0,
+        )
+        db.add(bet)
+        db.flush()
+
+        tx1.reference = f"global_crash_bet:{bet.id}"
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "bet_id": bet.id,
+            "round_id": round_row.id,
+            "user_id": user_id,
+            "amount_usd": float(amount),
+            "auto_cashout": auto_cashout,
+            "status": str(bet.status),
+            "payout": float(bet.payout),
+            "wallet": _serialize_wallet(wallet),
+        }
+    finally:
+        db.close()
+
+
+@app.post("/studio/crash-global/cashout/{bet_id}")
+def crash_global_cashout(bet_id: int):
+    db = SessionLocal()
+    try:
+        bet = db.query(GlobalCrashBet).filter(GlobalCrashBet.id == bet_id).with_for_update().one_or_none()
+        if not bet:
+            raise HTTPException(status_code=404, detail="Global crash bet not found")
+
+        round_row = db.query(GlobalCrashRound).filter(GlobalCrashRound.id == bet.round_id).with_for_update().one()
+        wallet = db.query(Wallet).filter(Wallet.user_id == bet.user_id).with_for_update().one()
+
+        if bet.status != "active":
+            return {
+                "ok": True,
+                "bet_id": bet.id,
+                "round_id": round_row.id,
+                "status": str(bet.status),
+                "cashout_multiplier": float(bet.cashout_multiplier) if bet.cashout_multiplier is not None else None,
+                "payout": float(bet.payout),
+                "wallet": _serialize_wallet(wallet),
+            }
+
+        state = _global_crash_round_state(round_row)
+
+        if str(round_row.status or "").lower() != "running":
+            raise HTTPException(status_code=400, detail="Round is not running")
+
+        if state["crashed"]:
+            bet.status = "lost"
+            bet.cashout_multiplier = None
+            bet.payout = 0.0
+            bet.settled_at = _utcnow()
+            db.commit()
+
+            return {
+                "ok": True,
+                "bet_id": bet.id,
+                "round_id": round_row.id,
+                "status": "lost",
+                "payout": 0.0,
+                "wallet": _serialize_wallet(wallet),
+            }
+
+        manual_cashout_multiplier = float(state["current_multiplier"])
+        payout = _round2(float(bet.amount_usd) * manual_cashout_multiplier)
+
+        wallet.balance_total = _round2(wallet.balance_total + payout)
+        wallet.balance_available = _round2(wallet.balance_available + payout)
+
+        bet.status = "cashed_out"
+        bet.cashout_multiplier = manual_cashout_multiplier
+        bet.payout = payout
+        bet.settled_at = _utcnow()
+
+        tx = Transaction(
+            user_id=bet.user_id,
+            type="crash_payout",
+            amount=float(payout),
+            balance_after=float(wallet.balance_total),
+            reference=f"global_crash_bet:{bet.id}",
+        )
+        db.add(tx)
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "bet_id": bet.id,
+            "round_id": round_row.id,
+            "status": "cashed_out",
+            "cashout_multiplier": manual_cashout_multiplier,
+            "payout": float(payout),
+            "wallet": _serialize_wallet(wallet),
+        }
+    finally:
+        db.close()
+
+
+@app.get("/studio/crash-global/history")
+def crash_global_history(limit: int = 20):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(GlobalCrashRound)
+            .order_by(GlobalCrashRound.id.desc())
+            .limit(max(1, min(limit, 100)))
+            .all()
+        )
+
+        return {
+            "count": len(rows),
+            "rounds": [
+                {
+                    "id": r.id,
+                    "status": r.status,
+                    "crash_point": float(r.crash_point),
+                    "server_seed_hash": r.server_seed_hash,
+                    "client_seed": r.client_seed,
+                    "nonce": r.nonce,
+                    "betting_started_at": str(r.betting_started_at) if r.betting_started_at else None,
+                    "starts_at": str(r.starts_at) if r.starts_at else None,
+                    "crashed_at": str(r.crashed_at) if r.crashed_at else None,
+                    "cooldown_until": str(r.cooldown_until) if r.cooldown_until else None,
+                    "ended_at": str(r.ended_at) if r.ended_at else None,
+                    "created_at": str(r.created_at),
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        db.close()
+
+
+@app.get("/studio/crash-global/my-bets/{user_id}")
+def crash_global_my_bets(user_id: str, limit: int = 50):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(GlobalCrashBet)
+            .filter(GlobalCrashBet.user_id == user_id)
+            .order_by(GlobalCrashBet.id.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+
+        return {
+            "user_id": user_id,
+            "count": len(rows),
+            "bets": [
+                {
+                    "id": b.id,
+                    "round_id": b.round_id,
+                    "amount_usd": float(b.amount_usd),
+                    "auto_cashout": float(b.auto_cashout) if b.auto_cashout is not None else None,
+                    "status": str(b.status),
+                    "cashout_multiplier": float(b.cashout_multiplier) if b.cashout_multiplier is not None else None,
+                    "payout": float(b.payout),
+                    "created_at": str(b.created_at),
+                    "settled_at": str(b.settled_at) if b.settled_at else None,
+                }
+                for b in rows
+            ],
+        }
+    finally:
+        db.close()
+
+
+from app.auth_routes import auth_router, init_auth_tables
+
+init_auth_tables()
+app.include_router(auth_router)
+
+# --------------------------
+# Public Activity Feed (Wins Only MVP)
+# --------------------------
+
+def _mask_public_user(user_id: str) -> str:
+    raw = str(user_id or "player")
+    if len(raw) <= 4:
+        return raw[0] + "***" if raw else "p***"
+    return raw[:1] + "***" + raw[-3:]
+
+
+@app.get("/activity/wins")
+def public_activity_wins(limit: int = 20):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Transaction)
+            .filter(Transaction.type.in_(["dice_payout", "crash_payout"]))
+            .order_by(Transaction.id.desc())
+            .limit(max(1, min(limit, 100)))
+            .all()
+        )
+
+        items = []
+        for tx in rows:
+            tx_type = str(tx.type or "").lower()
+
+            if tx_type == "dice_payout":
+                game = "Dice"
+                event_type = "win"
+            elif tx_type == "crash_payout":
+                game = "Crash"
+                event_type = "cashout"
+            else:
+                continue
+
+            items.append({
+                "id": tx.id,
+                "user": _mask_public_user(tx.user_id),
+                "game": game,
+                "event_type": event_type,
+                "amount": float(tx.amount) if tx.amount is not None else 0.0,
+                "reference": tx.reference,
+                "created_at": str(tx.created_at) if tx.created_at else None,
+            })
+
+        return {
+            "count": len(items),
+            "items": items,
+        }
+    finally:
+        db.close()

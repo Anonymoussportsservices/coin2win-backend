@@ -1,0 +1,732 @@
+import os
+import hmac
+import hashlib
+import json
+import time
+import requests
+
+from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi.responses import HTMLResponse
+from dotenv import load_dotenv
+
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    Float,
+    Text,
+    DateTime,
+    func,
+    ForeignKey,
+)
+from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.exc import IntegrityError
+
+load_dotenv("/var/www/coin2win/.env")
+
+app = FastAPI()
+
+# --------------------------
+# Config
+# --------------------------
+NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
+NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
+IPN_CALLBACK_URL = os.getenv("NOWPAYMENTS_IPN_CALLBACK_URL")
+
+MIN_DEPOSIT_USD = float(os.getenv("MIN_DEPOSIT_USD", "20"))
+MIN_WITHDRAW_USD = float(os.getenv("MIN_WITHDRAW_USD", "20"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+ADMIN_KEY = os.getenv("ADMIN_KEY", "").strip()
+
+if not NOWPAYMENTS_API_KEY:
+    raise RuntimeError("Missing NOWPAYMENTS_API_KEY in .env")
+if not NOWPAYMENTS_IPN_SECRET:
+    raise RuntimeError("Missing NOWPAYMENTS_IPN_SECRET in .env")
+if not IPN_CALLBACK_URL:
+    raise RuntimeError("Missing NOWPAYMENTS_IPN_CALLBACK_URL in .env")
+if not DATABASE_URL:
+    raise RuntimeError("Missing DATABASE_URL in .env")
+
+ACTIVE_WITHDRAW_STATUSES = ("requested", "approved", "sent")
+
+# --------------------------
+# Database
+# --------------------------
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(String(64), primary_key=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class Wallet(Base):
+    __tablename__ = "wallets"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), ForeignKey("users.id"), unique=True, nullable=False)
+
+    # New model:
+    balance_total = Column(Float, default=0)
+    balance_pending = Column(Float, default=0)
+    balance_available = Column(Float, default=0)
+
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Deposit(Base):
+    __tablename__ = "deposits"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+
+    payment_id = Column(String(64), unique=True, nullable=False)
+    status = Column(String(32), default="waiting")
+
+    amount_usd = Column(Float, nullable=False)
+    pay_currency = Column(String(32), nullable=False)
+
+    pay_amount = Column(Float, nullable=True)
+    pay_address = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Withdrawal(Base):
+    __tablename__ = "withdrawals"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+
+    amount_usd = Column(Float, nullable=False)
+    payout_currency = Column(String(32), nullable=False)
+    payout_address = Column(Text, nullable=False)
+
+    # requested -> approved -> sent -> completed
+    # rejected (refunds)
+    status = Column(String(32), default="requested")
+    refunded = Column(Integer, default=0)  # 0/1
+    note = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+
+    # deposit, withdrawal_request, withdrawal_refund, withdrawal_complete, etc
+    type = Column(String(64), nullable=False)
+
+    # + credit, - debit
+    amount = Column(Float, nullable=False)
+
+    # Store wallet TOTAL after the transaction (or total at time of event)
+    balance_after = Column(Float, nullable=False)
+
+    reference = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+@app.on_event("startup")
+def startup():
+    Base.metadata.create_all(bind=engine)
+
+# --------------------------
+# Helpers
+# --------------------------
+def _require_admin(x_admin_key: str | None):
+    # If ADMIN_KEY is blank, admin endpoints are open (MVP).
+    if not ADMIN_KEY:
+        return
+    if not x_admin_key or x_admin_key.strip() != ADMIN_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+def _np_headers():
+    return {
+        "x-api-key": NOWPAYMENTS_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+def _round2(x: float) -> float:
+    return round(float(x), 2)
+
+def _get_or_create_user_and_wallet(db, user_id: str) -> Wallet:
+    user = db.get(User, user_id)
+    if not user:
+        user = User(id=user_id)
+        db.add(user)
+        db.flush()
+
+    wallet = db.query(Wallet).filter(Wallet.user_id == user_id).one_or_none()
+    if not wallet:
+        wallet = Wallet(
+            user_id=user_id,
+            balance_total=0,
+            balance_pending=0,
+            balance_available=0,
+        )
+        db.add(wallet)
+        db.flush()
+
+    return wallet
+
+def _serialize_wallet(w: Wallet):
+    return {
+        "user_id": w.user_id,
+        "balance_total": float(w.balance_total),
+        "balance_available": float(w.balance_available),
+        "balance_pending": float(w.balance_pending),
+        "updated_at": str(w.updated_at),
+    }
+
+def _serialize_withdrawal(w: Withdrawal):
+    return {
+        "id": w.id,
+        "user_id": w.user_id,
+        "amount_usd": float(w.amount_usd),
+        "payout_currency": w.payout_currency,
+        "payout_address": w.payout_address,
+        "status": w.status,
+        "refunded": bool(w.refunded),
+        "note": w.note,
+        "created_at": str(w.created_at),
+        "updated_at": str(w.updated_at),
+    }
+
+def _serialize_deposit(d: Deposit):
+    return {
+        "id": d.id,
+        "user_id": d.user_id,
+        "payment_id": d.payment_id,
+        "status": d.status,
+        "amount_usd": float(d.amount_usd),
+        "pay_currency": d.pay_currency,
+        "pay_amount": d.pay_amount,
+        "pay_address": d.pay_address,
+        "created_at": str(d.created_at),
+        "updated_at": str(d.updated_at),
+    }
+
+def _serialize_tx(t: Transaction):
+    return {
+        "id": t.id,
+        "user_id": t.user_id,
+        "type": t.type,
+        "amount": float(t.amount),
+        "balance_after": float(t.balance_after),
+        "reference": t.reference,
+        "created_at": str(t.created_at),
+    }
+
+# --------------------------
+# Public Routes
+# --------------------------
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return """
+    <html>
+    <head><title>Coin2Win</title></head>
+    <body style="background:#0f172a;color:white;text-align:center;padding-top:15%">
+        <h1>Coin2Win.bet</h1>
+        <p>Crypto Casino Platform</p>
+        <p>Coming Online 🚀</p>
+        <p><a style="color:#60a5fa" href="/docs">API Docs</a></p>
+    </body>
+    </html>
+    """
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "app": "coin2win"}
+
+@app.get("/wallet/{user_id}")
+def wallet(user_id: str):
+    db = SessionLocal()
+    try:
+        w = _get_or_create_user_and_wallet(db, user_id)
+        db.commit()
+        return _serialize_wallet(w)
+    finally:
+        db.close()
+
+# --------------------------
+# Deposits
+# --------------------------
+@app.post("/deposit/create")
+async def create_deposit(request: Request):
+    body = await request.json()
+
+    user_id = str(body.get("user_id", "")).strip()
+    amount_usd = float(body.get("amount_usd", 0))
+    pay_currency = str(body.get("pay_currency", "")).lower().strip()
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    if amount_usd <= 0:
+        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
+    if amount_usd < MIN_DEPOSIT_USD:
+        raise HTTPException(status_code=400, detail=f"Minimum deposit is ${MIN_DEPOSIT_USD:.0f} USD")
+    if not pay_currency:
+        raise HTTPException(status_code=400, detail="pay_currency required")
+
+    payload = {
+        "price_amount": amount_usd,
+        "price_currency": "usd",
+        "pay_currency": pay_currency,
+        "ipn_callback_url": IPN_CALLBACK_URL,
+        "order_id": f"{user_id}_{int(time.time())}",
+        "order_description": "Coin2Win deposit",
+    }
+
+    r = requests.post(
+        "https://api.nowpayments.io/v1/payment",
+        headers=_np_headers(),
+        json=payload,
+        timeout=30,
+    )
+    data = r.json()
+
+    if not data.get("payment_id"):
+        return {"ok": False, "nowpayments": data}
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+
+        dep = Deposit(
+            user_id=user_id,
+            payment_id=str(data["payment_id"]),
+            status=str(data.get("payment_status") or "waiting").lower(),
+            amount_usd=float(amount_usd),
+            pay_currency=pay_currency,
+            pay_amount=float(data.get("pay_amount")) if data.get("pay_amount") is not None else None,
+            pay_address=data.get("pay_address"),
+        )
+        db.add(dep)
+        db.commit()
+
+        return {
+            "ok": True,
+            "payment_id": dep.payment_id,
+            "status": dep.status,
+            "price_amount_usd": amount_usd,
+            "pay_currency": pay_currency,
+            "pay_amount": data.get("pay_amount"),
+            "pay_address": data.get("pay_address"),
+            "payment_url": data.get("payment_url"),
+        }
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Deposit already exists for this payment_id")
+    finally:
+        db.close()
+
+@app.post("/webhooks/nowpayments")
+async def webhook(request: Request):
+    raw = await request.body()
+
+    sig = request.headers.get("x-nowpayments-sig")
+    if not sig:
+        raise HTTPException(status_code=400, detail="Missing x-nowpayments-sig")
+
+    gen = hmac.new(
+        NOWPAYMENTS_IPN_SECRET.encode(),
+        raw,
+        hashlib.sha512,
+    ).hexdigest()
+
+    if sig != gen:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    data = json.loads(raw.decode("utf-8"))
+    payment_id = str(data.get("payment_id", "")).strip()
+    status = str(data.get("payment_status", "")).lower().strip()
+
+    if not payment_id:
+        raise HTTPException(status_code=400, detail="Missing payment_id")
+
+    db = SessionLocal()
+    try:
+        dep = db.query(Deposit).filter(Deposit.payment_id == payment_id).one_or_none()
+        if not dep:
+            raise HTTPException(status_code=400, detail="Unknown payment_id")
+
+        # Idempotent credit
+        if status == "finished" and dep.status != "credited":
+            _get_or_create_user_and_wallet(db, dep.user_id)
+
+            w = db.query(Wallet).filter(Wallet.user_id == dep.user_id).with_for_update().one()
+            w.balance_total = _round2(w.balance_total + dep.amount_usd)
+            w.balance_available = _round2(w.balance_available + dep.amount_usd)
+
+            tx = Transaction(
+                user_id=dep.user_id,
+                type="deposit",
+                amount=float(dep.amount_usd),
+                balance_after=float(w.balance_total),
+                reference=payment_id,
+            )
+            db.add(tx)
+            dep.status = "credited"
+        else:
+            dep.status = status or dep.status
+
+        db.commit()
+        return {"ok": True, "payment_id": payment_id, "status": dep.status}
+    finally:
+        db.close()
+
+# --------------------------
+# Withdrawals
+# --------------------------
+@app.post("/withdraw/create")
+async def withdraw_create(request: Request):
+    body = await request.json()
+
+    user_id = str(body.get("user_id", "")).strip()
+    amount = float(body.get("amount_usd", 0))
+    currency = str(body.get("payout_currency", "")).lower().strip()
+    address = str(body.get("payout_address", "")).strip()
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
+    if amount < MIN_WITHDRAW_USD:
+        raise HTTPException(status_code=400, detail=f"Minimum withdrawal is ${MIN_WITHDRAW_USD:.0f}")
+    if not currency:
+        raise HTTPException(status_code=400, detail="payout_currency required")
+    if not address:
+        raise HTTPException(status_code=400, detail="payout_address required")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+
+        # 🔒 Withdrawal lock: only one active withdrawal at a time
+        existing_active = (
+            db.query(Withdrawal)
+            .filter(Withdrawal.user_id == user_id)
+            .filter(Withdrawal.status.in_(ACTIVE_WITHDRAW_STATUSES))
+            .count()
+        )
+        if existing_active > 0:
+            raise HTTPException(
+                status_code=400,
+                detail="You already have a withdrawal in progress. Please wait until it is completed or rejected.",
+            )
+
+        # Lock wallet row
+        w = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
+
+        if float(w.balance_available) < amount:
+            raise HTTPException(status_code=400, detail="Insufficient balance")
+
+        # Move funds: available -> pending
+        w.balance_available = _round2(w.balance_available - amount)
+        w.balance_pending = _round2(w.balance_pending + amount)
+
+        wd = Withdrawal(
+            user_id=user_id,
+            amount_usd=float(amount),
+            payout_currency=currency,
+            payout_address=address,
+            status="requested",
+        )
+        db.add(wd)
+        db.flush()  # get wd.id
+
+        tx = Transaction(
+            user_id=user_id,
+            type="withdrawal_request",
+            amount=-float(amount),
+            balance_after=float(w.balance_total),  # total unchanged at request time
+            reference=f"withdrawal:{wd.id}",
+        )
+        db.add(tx)
+
+        db.commit()
+        return {
+            "ok": True,
+            "withdrawal_id": wd.id,
+            "status": wd.status,
+            "amount_usd": wd.amount_usd,
+            "payout_currency": wd.payout_currency,
+        }
+    finally:
+        db.close()
+
+@app.get("/withdraw/{user_id}")
+def withdraw_list_user(user_id: str, limit: int = 20):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Withdrawal)
+            .filter(Withdrawal.user_id == user_id)
+            .order_by(Withdrawal.id.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return {"user_id": user_id, "count": len(rows), "withdrawals": [_serialize_withdrawal(w) for w in rows]}
+    finally:
+        db.close()
+
+def _refund_withdrawal(db, wd: Withdrawal, reason: str):
+    # Refund only once
+    if wd.refunded == 1:
+        return
+
+    w = db.query(Wallet).filter(Wallet.user_id == wd.user_id).with_for_update().one()
+
+    # Move funds back: pending -> available
+    w.balance_pending = _round2(w.balance_pending - wd.amount_usd)
+    w.balance_available = _round2(w.balance_available + wd.amount_usd)
+
+    tx = Transaction(
+        user_id=wd.user_id,
+        type="withdrawal_refund",
+        amount=float(wd.amount_usd),
+        balance_after=float(w.balance_total),  # total unchanged on refund
+        reference=f"withdrawal:{wd.id}",
+    )
+    db.add(tx)
+
+    wd.refunded = 1
+    wd.status = "rejected"
+    wd.note = reason
+
+# --------------------------
+# Admin Withdrawals
+# --------------------------
+@app.get("/admin/withdrawals")
+def admin_withdrawals(limit: int = 50, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Withdrawal)
+            .order_by(Withdrawal.id.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return {"count": len(rows), "withdrawals": [_serialize_withdrawal(w) for w in rows]}
+    finally:
+        db.close()
+
+@app.get("/admin/withdrawals/{withdrawal_id}")
+def admin_withdrawal_get(withdrawal_id: int, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        w = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
+        if not w:
+            raise HTTPException(status_code=404, detail="Withdrawal not found")
+        return _serialize_withdrawal(w)
+    finally:
+        db.close()
+
+@app.post("/admin/withdrawals/{withdrawal_id}/approve")
+async def admin_withdrawal_approve(withdrawal_id: int, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    body = await request.json()
+    note = str(body.get("note", "")).strip() if isinstance(body, dict) else ""
+
+    db = SessionLocal()
+    try:
+        w = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
+        if not w:
+            raise HTTPException(status_code=404, detail="Withdrawal not found")
+        if w.status in ("completed", "rejected"):
+            raise HTTPException(status_code=400, detail=f"Cannot approve withdrawal in status '{w.status}'")
+
+        w.status = "approved"
+        if note:
+            w.note = note
+
+        db.commit()
+        return {"ok": True, "withdrawal_id": w.id, "status": w.status}
+    finally:
+        db.close()
+
+@app.post("/admin/withdrawals/{withdrawal_id}/mark_sent")
+async def admin_withdrawal_mark_sent(withdrawal_id: int, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    body = await request.json()
+    note = str(body.get("note", "")).strip() if isinstance(body, dict) else ""
+
+    db = SessionLocal()
+    try:
+        w = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
+        if not w:
+            raise HTTPException(status_code=404, detail="Withdrawal not found")
+        if w.status not in ("approved", "requested"):
+            raise HTTPException(status_code=400, detail=f"Cannot mark sent from status '{w.status}'")
+
+        w.status = "sent"
+        if note:
+            w.note = note
+
+        db.commit()
+        return {"ok": True, "withdrawal_id": w.id, "status": w.status}
+    finally:
+        db.close()
+
+@app.post("/admin/withdrawals/{withdrawal_id}/complete")
+async def admin_withdrawal_complete(withdrawal_id: int, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    """
+    FINALIZE payout:
+    pending -> reduced
+    total   -> reduced
+    """
+    _require_admin(x_admin_key)
+    body = await request.json()
+    note = str(body.get("note", "")).strip() if isinstance(body, dict) else ""
+
+    db = SessionLocal()
+    try:
+        wd = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
+        if not wd:
+            raise HTTPException(status_code=404, detail="Withdrawal not found")
+        if wd.status == "rejected":
+            raise HTTPException(status_code=400, detail="Cannot complete a rejected withdrawal")
+        if wd.status == "completed":
+            return {"ok": True, "withdrawal_id": wd.id, "status": "completed"}
+
+        _get_or_create_user_and_wallet(db, wd.user_id)
+        w = db.query(Wallet).filter(Wallet.user_id == wd.user_id).with_for_update().one()
+
+        w.balance_pending = _round2(w.balance_pending - wd.amount_usd)
+        w.balance_total = _round2(w.balance_total - wd.amount_usd)
+
+        if w.balance_pending < -0.000001:
+            raise HTTPException(status_code=500, detail="Wallet pending balance went negative (data mismatch)")
+
+        tx = Transaction(
+            user_id=wd.user_id,
+            type="withdrawal_complete",
+            amount=-float(wd.amount_usd),
+            balance_after=float(w.balance_total),
+            reference=f"withdrawal:{wd.id}",
+        )
+        db.add(tx)
+
+        wd.status = "completed"
+        if note:
+            wd.note = note
+
+        db.commit()
+        return {"ok": True, "withdrawal_id": wd.id, "status": wd.status, "balance_total": float(w.balance_total)}
+    finally:
+        db.close()
+
+@app.post("/admin/withdrawals/{withdrawal_id}/reject")
+async def admin_withdrawal_reject(withdrawal_id: int, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    """
+    Reject + refund:
+    pending -> available
+    total unchanged
+    """
+    _require_admin(x_admin_key)
+    body = await request.json()
+    reason = str(body.get("reason", "")).strip() if isinstance(body, dict) else ""
+    if not reason:
+        reason = "Withdrawal rejected by support"
+
+    db = SessionLocal()
+    try:
+        wd = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
+        if not wd:
+            raise HTTPException(status_code=404, detail="Withdrawal not found")
+        if wd.status == "completed":
+            raise HTTPException(status_code=400, detail="Cannot reject a completed withdrawal")
+
+        _get_or_create_user_and_wallet(db, wd.user_id)
+        _refund_withdrawal(db, wd, reason=reason)
+
+        db.commit()
+        return {"ok": True, "withdrawal_id": wd.id, "status": wd.status, "refunded": bool(wd.refunded)}
+    finally:
+        db.close()
+
+# --------------------------
+# Admin Finance (NEW)
+# --------------------------
+@app.get("/admin/transactions")
+def admin_transactions(limit: int = 100, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Transaction)
+            .order_by(Transaction.id.desc())
+            .limit(max(1, min(limit, 500)))
+            .all()
+        )
+        return {"count": len(rows), "transactions": [_serialize_tx(t) for t in rows]}
+    finally:
+        db.close()
+
+@app.get("/admin/transactions/user/{user_id}")
+def admin_transactions_user(user_id: str, limit: int = 100, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Transaction)
+            .filter(Transaction.user_id == user_id)
+            .order_by(Transaction.id.desc())
+            .limit(max(1, min(limit, 500)))
+            .all()
+        )
+        return {"user_id": user_id, "count": len(rows), "transactions": [_serialize_tx(t) for t in rows]}
+    finally:
+        db.close()
+
+@app.get("/admin/users/{user_id}/snapshot")
+def admin_user_snapshot(user_id: str, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+
+        w = db.query(Wallet).filter(Wallet.user_id == user_id).one()
+        deposits = (
+            db.query(Deposit)
+            .filter(Deposit.user_id == user_id)
+            .order_by(Deposit.id.desc())
+            .limit(10)
+            .all()
+        )
+        withdrawals = (
+            db.query(Withdrawal)
+            .filter(Withdrawal.user_id == user_id)
+            .order_by(Withdrawal.id.desc())
+            .limit(10)
+            .all()
+        )
+        txs = (
+            db.query(Transaction)
+            .filter(Transaction.user_id == user_id)
+            .order_by(Transaction.id.desc())
+            .limit(20)
+            .all()
+        )
+
+        # Helpful quick stats for ops
+        active_withdrawals = [
+            _serialize_withdrawal(x)
+            for x in withdrawals
+            if x.status in ACTIVE_WITHDRAW_STATUSES
+        ]
+
+        return {
+            "user_id": user_id,
+            "wallet": _serialize_wallet(w),
+            "active_withdrawals": active_withdrawals,
+            "deposits_last_10": [_serialize_deposit(d) for d in deposits],
+            "withdrawals_last_10": [_serialize_withdrawal(wd) for wd in withdrawals],
+            "transactions_last_20": [_serialize_tx(t) for t in txs],
+        }
+    finally:
+        db.close()
