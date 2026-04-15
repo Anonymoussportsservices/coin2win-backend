@@ -1,4 +1,3 @@
-from app.agent_auth import router as agent_auth_router
 import os
 import hmac
 import hashlib
@@ -27,13 +26,11 @@ from sqlalchemy import (
     DateTime,
     func,
     ForeignKey,
-    Boolean,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.exc import IntegrityError
 
 app = FastAPI()
-app.include_router(agent_auth_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -166,35 +163,6 @@ if not DATABASE_URL:
 
 ACTIVE_WITHDRAW_STATUSES = ("requested", "approved", "sent")
 
-KYC_LEVEL_LIMITS = {
-    1: 200.0,
-    2: 1000.0,
-}
-
-WITHDRAW_BLOCK_REASONS = {
-    "USER_ID_REQUIRED": "user_id required",
-    "INVALID_AMOUNT": "amount_usd must be > 0",
-    "MIN_WITHDRAW_NOT_MET": f"Minimum withdrawal is ${MIN_WITHDRAW_USD:.0f}",
-    "PAYOUT_CURRENCY_REQUIRED": "payout_currency required",
-    "PAYOUT_ADDRESS_REQUIRED": "payout_address required",
-    "KYC_REQUIRED": "KYC verification required before withdrawals are enabled.",
-    "WITHDRAWAL_ALREADY_ACTIVE": "You already have a withdrawal in progress. Please wait until it is completed or rejected.",
-    "KYC_LEVEL_TOO_LOW": "Your KYC level does not allow withdrawals yet.",
-    "AUTO_WITHDRAW_DISABLED": "Withdrawals are not enabled for this account yet.",
-    "AUTO_WITHDRAW_LIMIT_EXCEEDED": "Withdrawal amount exceeds your current approved limit.",
-    "INSUFFICIENT_AVAILABLE_BALANCE": "Insufficient balance",
-    "PROCESSOR_REF_REQUIRED": "processor_ref required",
-}
-
-def _withdraw_error(reason_code: str, status_code: int):
-    return HTTPException(
-        status_code=status_code,
-        detail={
-            "reason_code": reason_code,
-            "message": WITHDRAW_BLOCK_REASONS[reason_code],
-        },
-    )
-
 # --------------------------
 # Database
 # --------------------------
@@ -204,14 +172,7 @@ class User(Base):
     __tablename__ = "users"
     id = Column(String(64), primary_key=True)
     kyc_status = Column(String(20), nullable=False, default="unverified", server_default="unverified")
-    kyc_level = Column(Integer, nullable=False, default=0, server_default="0")
-    auto_withdraw_enabled = Column(Boolean, nullable=False, default=False, server_default=text("false"))
-    auto_withdraw_limit = Column(Float, nullable=False, default=0, server_default="0")
-    kyc_submitted_at = Column(DateTime(timezone=True), nullable=True)
     kyc_verified_at = Column(DateTime(timezone=True), nullable=True)
-    kyc_rejected_at = Column(DateTime(timezone=True), nullable=True)
-    kyc_reviewed_at = Column(DateTime(timezone=True), nullable=True)
-    kyc_approved_by = Column(Text, nullable=True)
     kyc_rejected_reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -259,15 +220,6 @@ class Withdrawal(Base):
     refunded = Column(Integer, default=0)  # 0/1
     note = Column(Text, nullable=True)
 
-    approved_at = Column(DateTime(timezone=True), nullable=True)
-    sent_at = Column(DateTime(timezone=True), nullable=True)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-    rejected_at = Column(DateTime(timezone=True), nullable=True)
-    failed_at = Column(DateTime(timezone=True), nullable=True)
-    approved_by = Column(String(128), nullable=True)
-    processor_ref = Column(String(255), nullable=True)
-    failure_reason = Column(Text, nullable=True)
-
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -286,15 +238,6 @@ class Transaction(Base):
     balance_after = Column(Float, nullable=False)
 
     reference = Column(String(128), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-class WithdrawalAuditLog(Base):
-    __tablename__ = "withdrawal_audit_logs"
-    id = Column(Integer, primary_key=True)
-    withdrawal_id = Column(Integer, nullable=False)
-    action = Column(String(64), nullable=False)
-    actor_id = Column(String(128), nullable=True)
-    note = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
@@ -330,8 +273,6 @@ def crash_global_round_bets(round_id: int):
             if len(raw) <= 4:
                 return raw[0] + "***" if raw else "p***"
             return raw[:1] + "***" + raw[-3:]
-
-        
 
         return {
             "round_id": round_id,
@@ -485,23 +426,11 @@ Base.metadata.create_all(bind=engine)
 # Helpers
 # --------------------------
 def _require_admin(x_admin_key: str | None):
-    import sys
-    expected = (ADMIN_KEY or "").strip()
-    received = (x_admin_key or "").strip()
-
-    print(
-        f"[ADMIN_DEBUG] expected_len={len(expected)} received_len={len(received)} "
-        f"expected_prefix={expected[:8]!r} received_prefix={received[:8]!r} "
-        f"match={received == expected}",
-        file=sys.stderr,
-        flush=True,
-    )
-
+    # If ADMIN_KEY is blank, admin endpoints are open (MVP).
     if not ADMIN_KEY:
         return
-    if not x_admin_key or received != expected:
+    if not x_admin_key or x_admin_key.strip() != ADMIN_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
-
 
 def _np_headers():
     return {
@@ -532,26 +461,6 @@ def _get_or_create_user_and_wallet(db, user_id: str) -> Wallet:
 
     return wallet
 
-
-
-# --------------------------
-# Withdrawal Transition Guards
-# --------------------------
-ALLOWED_TRANSITIONS = {
-    "requested": {"approved", "rejected"},
-    "approved": {"sent", "rejected"},
-    "sent": {"completed"},
-    "completed": set(),
-    "rejected": set(),
-}
-
-def _validate_transition(current: str, target: str):
-    allowed = ALLOWED_TRANSITIONS.get(current, set())
-    if target not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid transition: {current} -> {target}"
-        )
 def _serialize_wallet(w: Wallet):
     return {
         "user_id": w.user_id,
@@ -571,14 +480,6 @@ def _serialize_withdrawal(w: Withdrawal):
         "status": w.status,
         "refunded": bool(w.refunded),
         "note": w.note,
-        "approved_at": str(w.approved_at) if w.approved_at else None,
-        "sent_at": str(w.sent_at) if w.sent_at else None,
-        "completed_at": str(w.completed_at) if w.completed_at else None,
-        "rejected_at": str(w.rejected_at) if w.rejected_at else None,
-        "failed_at": str(w.failed_at) if w.failed_at else None,
-        "approved_by": w.approved_by,
-        "processor_ref": w.processor_ref,
-        "failure_reason": w.failure_reason,
         "created_at": str(w.created_at),
         "updated_at": str(w.updated_at),
     }
@@ -607,16 +508,6 @@ def _serialize_tx(t: Transaction):
         "reference": t.reference,
         "created_at": str(t.created_at),
     }
-
-def _write_withdrawal_audit(db, withdrawal_id: int, action: str, actor_id: str | None = None, note: str | None = None):
-    db.add(
-        WithdrawalAuditLog(
-            withdrawal_id=withdrawal_id,
-            action=action,
-            actor_id=actor_id,
-            note=note,
-        )
-    )
 
 # --------------------------
 # Public Routes
@@ -675,7 +566,7 @@ async def create_deposit(request: Request):
         raise HTTPException(status_code=400, detail="amount_usd must be a valid number")
 
     if not user_id:
-        raise _withdraw_error("USER_ID_REQUIRED", 400)
+        raise HTTPException(status_code=400, detail="user_id required")
     if amount_usd <= 0:
         raise HTTPException(status_code=400, detail="amount_usd must be > 0")
     if amount_usd < MIN_DEPOSIT_USD:
@@ -838,15 +729,15 @@ async def withdraw_create(request: Request):
     address = str(body.get("payout_address", "")).strip()
 
     if not user_id:
-        raise _withdraw_error("USER_ID_REQUIRED", 400)
+        raise HTTPException(status_code=400, detail="user_id required")
     if amount <= 0:
-        raise _withdraw_error("INVALID_AMOUNT", 400)
+        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
     if amount < MIN_WITHDRAW_USD:
-        raise _withdraw_error("MIN_WITHDRAW_NOT_MET", 400)
+        raise HTTPException(status_code=400, detail=f"Minimum withdrawal is ${MIN_WITHDRAW_USD:.0f}")
     if not currency:
-        raise _withdraw_error("PAYOUT_CURRENCY_REQUIRED", 400)
+        raise HTTPException(status_code=400, detail="payout_currency required")
     if not address:
-        raise _withdraw_error("PAYOUT_ADDRESS_REQUIRED", 400)
+        raise HTTPException(status_code=400, detail="payout_address required")
 
     db = SessionLocal()
     try:
@@ -855,17 +746,10 @@ async def withdraw_create(request: Request):
         # KYC CHECK
         user = db.query(User).filter(User.id == user_id).one()
         if user.kyc_status != "verified":
-            raise _withdraw_error("KYC_REQUIRED", 403)
-        if int(getattr(user, "kyc_level", 0) or 0) < 1:
-            raise _withdraw_error("KYC_LEVEL_TOO_LOW", 403)
-        if not bool(getattr(user, "auto_withdraw_enabled", False)):
-            raise _withdraw_error("AUTO_WITHDRAW_DISABLED", 403)
-        approved_limit = float(getattr(user, "auto_withdraw_limit", 0) or 0)
-        if approved_limit > 0 and float(amount) > approved_limit:
-            raise _withdraw_error("AUTO_WITHDRAW_LIMIT_EXCEEDED", 403)
-
-        # Lock wallet row first (prevents concurrent withdrawal races)
-        w = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
+            raise HTTPException(
+                status_code=403,
+                detail="KYC verification required before withdrawals are enabled."
+            )
 
         # 🔒 Withdrawal lock: only one active withdrawal at a time
         existing_active = (
@@ -875,10 +759,16 @@ async def withdraw_create(request: Request):
             .count()
         )
         if existing_active > 0:
-            raise _withdraw_error("WITHDRAWAL_ALREADY_ACTIVE", 400)
+            raise HTTPException(
+                status_code=400,
+                detail="You already have a withdrawal in progress. Please wait until it is completed or rejected.",
+            )
+
+        # Lock wallet row
+        w = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
 
         if float(w.balance_available) < amount:
-            raise _withdraw_error("INSUFFICIENT_AVAILABLE_BALANCE", 400)
+            raise HTTPException(status_code=400, detail="Insufficient balance")
 
         # Move funds: available -> pending
         w.balance_available = _round2(w.balance_available - amount)
@@ -951,213 +841,35 @@ def _refund_withdrawal(db, wd: Withdrawal, reason: str):
 
     wd.refunded = 1
     wd.status = "rejected"
-    wd.rejected_at = func.now()
     wd.note = reason
-    _write_withdrawal_audit(db, wd.id, "rejected", actor_id="admin", note=reason)
 
 # --------------------------
 # Admin Withdrawals
 # --------------------------
-
 @app.get("/admin/withdrawals")
-def admin_withdrawals(
-    limit: int = 50,
-    offset: int = 0,
-    sort: str = "id_desc",
-    status: str | None = None,
-    user_id: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    viewer_id: str | None = None,
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")
-):
+def admin_withdrawals(limit: int = 50, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
     _require_admin(x_admin_key)
     db = SessionLocal()
     try:
-        scoped_ids = _scoped_user_ids(db, viewer_id) if viewer_id else None
-        q = db.query(Withdrawal)
-
-        if scoped_ids is not None:
-            q = q.filter(Withdrawal.user_id.in_(scoped_ids))
-
-        if status:
-            q = q.filter(Withdrawal.status == status)
-
-        if user_id:
-            q = q.filter(Withdrawal.user_id == user_id)
-
-        if date_from:
-            q = q.filter(Withdrawal.created_at >= date_from)
-
-        if date_to:
-            q = q.filter(Withdrawal.created_at <= date_to)
-
-        total = q.count()
-
-        sort_map = {
-            "id_desc": Withdrawal.id.desc(),
-            "id_asc": Withdrawal.id.asc(),
-            "created_at_desc": Withdrawal.created_at.desc(),
-            "created_at_asc": Withdrawal.created_at.asc(),
-            "amount_desc": Withdrawal.amount_usd.desc(),
-            "amount_asc": Withdrawal.amount_usd.asc(),
-        }
-        order_clause = sort_map.get(sort, Withdrawal.id.desc())
-
         rows = (
-            q.order_by(order_clause)
-            .offset(max(0, offset))
+            db.query(Withdrawal)
+            .order_by(Withdrawal.id.desc())
             .limit(max(1, min(limit, 200)))
             .all()
         )
-
-        return {
-            "total": total,
-            "count": len(rows),
-            "limit": limit,
-            "offset": max(0, offset),
-            "sort": sort,
-            "withdrawals": [_serialize_withdrawal(w) for w in rows]
-        }
-    finally:
-        db.close()
-
-
-
-def _serialize_withdrawal_light(w):
-    return {
-        "id": w.id,
-        "user_id": w.user_id,
-        "amount_usd": float(w.amount_usd),
-        "status": w.status,
-        "created_at": str(w.created_at),
-    }
-
-def _queue_response(db, status, scoped_ids=None):
-    q = db.query(Withdrawal).filter(Withdrawal.status == status)
-    if scoped_ids is not None:
-        q = q.filter(Withdrawal.user_id.in_(scoped_ids))
-
-    rows = q.order_by(Withdrawal.id.asc()).all()
-
-    count = len(rows)
-    total_amount = round(sum(float(x.amount_usd or 0) for x in rows), 2)
-
-    oldest = _serialize_withdrawal_light(rows[0]) if rows else None
-    newest = _serialize_withdrawal_light(rows[-1]) if rows else None
-
-    items = [_serialize_withdrawal_light(x) for x in rows[:50]]
-
-    return {
-        "status": status,
-        "count": count,
-        "total_amount": total_amount,
-        "oldest": oldest,
-        "newest": newest,
-        "items": items
-    }
-
-@app.get("/admin/withdrawals/queue/requested")
-def admin_queue_requested(viewer_id: str | None = None, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
-    db = SessionLocal()
-    try:
-        scoped_ids = _scoped_user_ids(db, viewer_id) if viewer_id else None
-        return _queue_response(db, "requested", scoped_ids)
-    finally:
-        db.close()
-
-@app.get("/admin/withdrawals/queue/approved")
-def admin_queue_approved(viewer_id: str | None = None, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
-    db = SessionLocal()
-    try:
-        scoped_ids = _scoped_user_ids(db, viewer_id) if viewer_id else None
-        return _queue_response(db, "approved", scoped_ids)
-    finally:
-        db.close()
-
-@app.get("/admin/withdrawals/queue/sent")
-def admin_queue_sent(viewer_id: str | None = None, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
-    db = SessionLocal()
-    try:
-        scoped_ids = _scoped_user_ids(db, viewer_id) if viewer_id else None
-        return _queue_response(db, "sent", scoped_ids)
-    finally:
-        db.close()
-
-@app.get("/admin/withdrawals/queue/failed")
-def admin_queue_failed(viewer_id: str | None = None, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
-    db = SessionLocal()
-    try:
-        scoped_ids = _scoped_user_ids(db, viewer_id) if viewer_id else None
-        return _queue_response(db, "failed", scoped_ids)
-    finally:
-        db.close()
-
-
-@app.get("/admin/withdrawals/metrics")
-def admin_withdrawals_metrics(
-    viewer_id: str | None = None,
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")
-):
-    _require_admin(x_admin_key)
-    db = SessionLocal()
-    try:
-        scoped_ids = _scoped_user_ids(db, viewer_id) if viewer_id else None
-        statuses = ["requested", "approved", "sent", "completed", "rejected", "failed"]
-        counts = {}
-        for st in statuses:
-            q = db.query(Withdrawal).filter(Withdrawal.status == st)
-            if scoped_ids is not None:
-                q = q.filter(Withdrawal.user_id.in_(scoped_ids))
-            counts[st] = q.count()
-
-        pending_statuses = ("requested", "approved", "sent")
-        pending_q = db.query(Withdrawal).filter(Withdrawal.status.in_(pending_statuses))
-        if scoped_ids is not None:
-            pending_q = pending_q.filter(Withdrawal.user_id.in_(scoped_ids))
-        pending_rows = pending_q.all()
-        total_pending_amount = round(sum(float(x.amount_usd or 0) for x in pending_rows), 2)
-
-        return {
-            **counts,
-            "total_pending_amount": total_pending_amount
-        }
+        return {"count": len(rows), "withdrawals": [_serialize_withdrawal(w) for w in rows]}
     finally:
         db.close()
 
 @app.get("/admin/withdrawals/{withdrawal_id}")
-
-def admin_withdrawal_get(withdrawal_id: int, viewer_id: str | None = None, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+def admin_withdrawal_get(withdrawal_id: int, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
     _require_admin(x_admin_key)
     db = SessionLocal()
     try:
         w = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
         if not w:
             raise HTTPException(status_code=404, detail="Withdrawal not found")
-        if viewer_id:
-            _enforce_hierarchy_scope(db, viewer_id, w.user_id)
-
-        audits = db.query(WithdrawalAuditLog).filter(
-            WithdrawalAuditLog.withdrawal_id == withdrawal_id
-        ).order_by(WithdrawalAuditLog.id.asc()).all()
-
-        return {
-            **_serialize_withdrawal(w),
-            "audit_trail": [
-                {
-                    "id": a.id,
-                    "action": a.action,
-                    "actor_id": a.actor_id,
-                    "note": a.note,
-                    "created_at": str(a.created_at)
-                }
-                for a in audits
-            ]
-        }
+        return _serialize_withdrawal(w)
     finally:
         db.close()
 
@@ -1169,20 +881,15 @@ async def admin_withdrawal_approve(withdrawal_id: int, request: Request, x_admin
 
     db = SessionLocal()
     try:
-        w = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).with_for_update().one_or_none()
+        w = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
         if not w:
             raise HTTPException(status_code=404, detail="Withdrawal not found")
-        if w.status == "approved":
-            return {"ok": True, "withdrawal_id": w.id, "status": "approved"}
-        if w.status != "requested":
+        if w.status in ("completed", "rejected"):
             raise HTTPException(status_code=400, detail=f"Cannot approve withdrawal in status '{w.status}'")
 
         w.status = "approved"
-        w.approved_at = func.now()
-        w.approved_by = "admin"
         if note:
             w.note = note
-        _write_withdrawal_audit(db, w.id, "approved", actor_id="admin", note=note or None)
 
         db.commit()
         return {"ok": True, "withdrawal_id": w.id, "status": w.status}
@@ -1194,26 +901,18 @@ async def admin_withdrawal_mark_sent(withdrawal_id: int, request: Request, x_adm
     _require_admin(x_admin_key)
     body = await request.json()
     note = str(body.get("note", "")).strip() if isinstance(body, dict) else ""
-    processor_ref = str(body.get("processor_ref", "")).strip() if isinstance(body, dict) else ""
-    if not processor_ref:
-        raise _withdraw_error("PROCESSOR_REF_REQUIRED", 400)
 
     db = SessionLocal()
     try:
-        w = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).with_for_update().one_or_none()
+        w = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
         if not w:
             raise HTTPException(status_code=404, detail="Withdrawal not found")
-        if w.status == "sent":
-            return {"ok": True, "withdrawal_id": w.id, "status": "sent"}
-        if w.status != "approved":
+        if w.status not in ("approved", "requested"):
             raise HTTPException(status_code=400, detail=f"Cannot mark sent from status '{w.status}'")
 
         w.status = "sent"
-        w.sent_at = func.now()
-        w.processor_ref = processor_ref
         if note:
             w.note = note
-        _write_withdrawal_audit(db, w.id, "sent", actor_id="admin", note=note or None)
 
         db.commit()
         return {"ok": True, "withdrawal_id": w.id, "status": w.status}
@@ -1233,13 +932,13 @@ async def admin_withdrawal_complete(withdrawal_id: int, request: Request, x_admi
 
     db = SessionLocal()
     try:
-        wd = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).with_for_update().one_or_none()
+        wd = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
         if not wd:
             raise HTTPException(status_code=404, detail="Withdrawal not found")
+        if wd.status == "rejected":
+            raise HTTPException(status_code=400, detail="Cannot complete a rejected withdrawal")
         if wd.status == "completed":
             return {"ok": True, "withdrawal_id": wd.id, "status": "completed"}
-        if wd.status != "sent":
-            raise HTTPException(status_code=400, detail=f"Cannot complete withdrawal from status '{wd.status}'")
 
         _get_or_create_user_and_wallet(db, wd.user_id)
         w = db.query(Wallet).filter(Wallet.user_id == wd.user_id).with_for_update().one()
@@ -1260,10 +959,8 @@ async def admin_withdrawal_complete(withdrawal_id: int, request: Request, x_admi
         db.add(tx)
 
         wd.status = "completed"
-        wd.completed_at = func.now()
         if note:
             wd.note = note
-        _write_withdrawal_audit(db, wd.id, "completed", actor_id="admin", note=note or None)
 
         db.commit()
         return {"ok": True, "withdrawal_id": wd.id, "status": wd.status, "balance_total": float(w.balance_total)}
@@ -1285,13 +982,11 @@ async def admin_withdrawal_reject(withdrawal_id: int, request: Request, x_admin_
 
     db = SessionLocal()
     try:
-        wd = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).with_for_update().one_or_none()
+        wd = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).one_or_none()
         if not wd:
             raise HTTPException(status_code=404, detail="Withdrawal not found")
-        if wd.status == "rejected":
-            return {"ok": True, "withdrawal_id": wd.id, "status": "rejected", "refunded": bool(wd.refunded)}
-        if wd.status not in ("requested", "approved"):
-            raise HTTPException(status_code=400, detail=f"Cannot reject withdrawal in status '{wd.status}'")
+        if wd.status == "completed":
+            raise HTTPException(status_code=400, detail="Cannot reject a completed withdrawal")
 
         _get_or_create_user_and_wallet(db, wd.user_id)
         _refund_withdrawal(db, wd, reason=reason)
@@ -1300,61 +995,6 @@ async def admin_withdrawal_reject(withdrawal_id: int, request: Request, x_admin_
         return {"ok": True, "withdrawal_id": wd.id, "status": wd.status, "refunded": bool(wd.refunded)}
     finally:
         db.close()
-
-
-@app.post("/admin/withdrawals/{withdrawal_id}/fail")
-async def admin_withdrawal_fail(withdrawal_id: int, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    """
-    Fail after send:
-    pending -> available
-    total unchanged
-    """
-    _require_admin(x_admin_key)
-    body = await request.json()
-    reason = str(body.get("reason", "")).strip() if isinstance(body, dict) else ""
-    if not reason:
-        reason = "Withdrawal payout failed"
-
-    db = SessionLocal()
-    try:
-        wd = db.query(Withdrawal).filter(Withdrawal.id == withdrawal_id).with_for_update().one_or_none()
-        if not wd:
-            raise HTTPException(status_code=404, detail="Withdrawal not found")
-        if wd.status == "failed":
-            return {"ok": True, "withdrawal_id": wd.id, "status": "failed", "refunded": bool(wd.refunded)}
-        if wd.status != "sent":
-            raise HTTPException(status_code=400, detail=f"Cannot fail withdrawal in status '{wd.status}'")
-
-        _get_or_create_user_and_wallet(db, wd.user_id)
-        w = db.query(Wallet).filter(Wallet.user_id == wd.user_id).with_for_update().one()
-
-        w.balance_pending = _round2(w.balance_pending - wd.amount_usd)
-        w.balance_available = _round2(w.balance_available + wd.amount_usd)
-
-        if w.balance_pending < -0.000001:
-            raise HTTPException(status_code=500, detail="Wallet pending balance went negative (data mismatch)")
-
-        tx = Transaction(
-            user_id=wd.user_id,
-            type="withdrawal_failed_refund",
-            amount=float(wd.amount_usd),
-            balance_after=float(w.balance_total),
-            reference=f"withdrawal:{wd.id}",
-        )
-        db.add(tx)
-
-        wd.refunded = 1
-        wd.status = "failed"
-        wd.failed_at = func.now()
-        wd.failure_reason = reason
-        wd.note = reason
-        _write_withdrawal_audit(db, wd.id, "failed", actor_id="admin", note=reason)
-
-        db.commit()
-        return {"ok": True, "withdrawal_id": wd.id, "status": wd.status, "refunded": bool(wd.refunded)}
-    finally:
-        db.close()
-
 
 # --------------------------
 # Admin Deposits
@@ -1503,198 +1143,6 @@ def admin_user_snapshot(user_id: str, x_admin_key: str | None = Header(default=N
             "deposits_last_10": [_serialize_deposit(d) for d in deposits],
             "withdrawals_last_10": [_serialize_withdrawal(wd) for wd in withdrawals],
             "transactions_last_20": [_serialize_tx(t) for t in txs],
-        }
-    finally:
-        db.close()
-
-
-@app.get("/admin/users/{user_id}/profile")
-def admin_user_profile(user_id: str, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
-    db = SessionLocal()
-    try:
-        _get_or_create_user_and_wallet(db, user_id)
-
-        user_row = db.execute(sa_text("""
-            SELECT
-                u.id,
-                COALESCE(cu.email, u.email) AS email,
-                cu.username,
-                cu.full_name,
-                cu.telegram,
-                cu.phone,
-                cu.notes,
-                u.role,
-                u.parent_id,
-                u.created_by,
-                u.agent_code,
-                COALESCE(cu.is_active, u.is_active, TRUE) AS is_active,
-                u.created_at,
-                u.kyc_status,
-                u.kyc_level,
-                u.auto_withdraw_enabled,
-                u.auto_withdraw_limit,
-                u.kyc_verified_at,
-                u.kyc_rejected_reason,
-                u.kyc_approved_by,
-                u.billing_type,
-                u.pph_rate,
-                u.ggr_share,
-                u.service_pph,
-                u.service_ggr,
-                u.originals_ggr,
-                u.casino_ggr,
-                u.live_betting_ggr,
-                u.updated_at,
-                u.updated_by,
-                u.last_parent_change_at,
-                u.last_parent_change_by,
-                u.last_agent_code_change_at,
-                u.last_agent_code_change_by,
-                u.last_created_by_change_at,
-                u.last_created_by_change_by
-            FROM users u
-            LEFT JOIN c2w_users cu
-                ON cu.user_id = u.id
-            WHERE u.id = :user_id
-            LIMIT 1
-        """), {"user_id": user_id}).mappings().first()
-
-        if not user_row:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        wallet_row = db.execute(sa_text("""
-            SELECT
-                user_id,
-                COALESCE(balance_total, 0) AS balance_total,
-                COALESCE(balance_available, 0) AS balance_available,
-                COALESCE(balance_pending, 0) AS balance_pending,
-                updated_at
-            FROM wallets
-            WHERE user_id = :user_id
-            LIMIT 1
-        """), {"user_id": user_id}).mappings().first()
-
-        deposit_stats = db.execute(sa_text("""
-            SELECT
-                COUNT(*) AS total_count,
-                COALESCE(SUM(amount_usd), 0) AS total_amount,
-                COALESCE(SUM(
-                    CASE
-                        WHEN LOWER(COALESCE(status, '')) IN ('credited', 'paid', 'completed')
-                        THEN amount_usd ELSE 0
-                    END
-                ), 0) AS credited_amount
-            FROM deposits
-            WHERE user_id = :user_id
-        """), {"user_id": user_id}).mappings().first()
-
-        withdrawal_stats = db.execute(sa_text("""
-            SELECT
-                COUNT(*) AS total_count,
-                COALESCE(SUM(amount_usd), 0) AS total_amount,
-                COALESCE(SUM(
-                    CASE
-                        WHEN LOWER(COALESCE(status, '')) = 'completed'
-                        THEN amount_usd ELSE 0
-                    END
-                ), 0) AS completed_amount,
-                COALESCE(SUM(
-                    CASE
-                        WHEN LOWER(COALESCE(status, '')) IN ('requested', 'approved', 'sent')
-                        THEN amount_usd ELSE 0
-                    END
-                ), 0) AS pending_amount
-            FROM withdrawals
-            WHERE user_id = :user_id
-        """), {"user_id": user_id}).mappings().first()
-
-        recent_transactions = (
-            db.query(Transaction)
-            .filter(Transaction.user_id == user_id)
-            .order_by(Transaction.id.desc())
-            .limit(20)
-            .all()
-        )
-
-        recent_deposits = (
-            db.query(Deposit)
-            .filter(Deposit.user_id == user_id)
-            .order_by(Deposit.id.desc())
-            .limit(10)
-            .all()
-        )
-
-        recent_withdrawals = (
-            db.query(Withdrawal)
-            .filter(Withdrawal.user_id == user_id)
-            .order_by(Withdrawal.id.desc())
-            .limit(10)
-            .all()
-        )
-
-        return {
-            "ok": True,
-            "profile": {
-                "user": {
-                    "id": user_row["id"],
-                    "email": user_row["email"],
-                    "username": user_row["username"],
-                    "full_name": user_row["full_name"],
-                    "telegram": user_row["telegram"],
-                    "phone": user_row["phone"],
-                    "notes": user_row["notes"],
-                    "role": user_row["role"],
-                    "parent_id": user_row["parent_id"],
-                    "created_by": user_row["created_by"],
-                    "agent_code": user_row["agent_code"],
-                    "is_active": bool(user_row["is_active"]) if user_row["is_active"] is not None else True,
-                    "created_at": user_row["created_at"].isoformat() if user_row["created_at"] else None,
-                    "kyc_status": user_row["kyc_status"] or "unverified",
-                    "kyc_level": int(user_row["kyc_level"] or 0),
-                    "auto_withdraw_enabled": bool(user_row["auto_withdraw_enabled"]) if user_row["auto_withdraw_enabled"] is not None else False,
-                    "auto_withdraw_limit": float(user_row["auto_withdraw_limit"] or 0),
-                    "kyc_verified_at": user_row["kyc_verified_at"].isoformat() if user_row["kyc_verified_at"] else None,
-                    "kyc_rejected_reason": user_row["kyc_rejected_reason"],
-                    "kyc_approved_by": user_row["kyc_approved_by"],
-                    "billing_type": user_row["billing_type"],
-                    "pph_rate": float(user_row["pph_rate"] or 0),
-                    "ggr_share": float(user_row["ggr_share"] or 0),
-                    "service_pph": float(user_row["service_pph"] or 0),
-                    "service_ggr": float(user_row["service_ggr"] or 0),
-                    "originals_ggr": float(user_row["originals_ggr"] or 0),
-                    "casino_ggr": float(user_row["casino_ggr"] or 0),
-                    "live_betting_ggr": float(user_row["live_betting_ggr"] or 0),
-                    "updated_at": user_row["updated_at"].isoformat() if user_row["updated_at"] else None,
-                    "updated_by": user_row["updated_by"],
-                    "last_parent_change_at": user_row["last_parent_change_at"].isoformat() if user_row["last_parent_change_at"] else None,
-                    "last_parent_change_by": user_row["last_parent_change_by"],
-                    "last_agent_code_change_at": user_row["last_agent_code_change_at"].isoformat() if user_row["last_agent_code_change_at"] else None,
-                    "last_agent_code_change_by": user_row["last_agent_code_change_by"],
-                    "last_created_by_change_at": user_row["last_created_by_change_at"].isoformat() if user_row["last_created_by_change_at"] else None,
-                    "last_created_by_change_by": user_row["last_created_by_change_by"],
-                },
-                "wallet": {
-                    "balance_total": float((wallet_row["balance_total"] if wallet_row else 0) or 0),
-                    "balance_available": float((wallet_row["balance_available"] if wallet_row else 0) or 0),
-                    "balance_pending": float((wallet_row["balance_pending"] if wallet_row else 0) or 0),
-                    "updated_at": wallet_row["updated_at"].isoformat() if wallet_row and wallet_row["updated_at"] else None,
-                },
-                "deposit_stats": {
-                    "total_count": int(deposit_stats["total_count"] or 0),
-                    "total_amount": float(deposit_stats["total_amount"] or 0),
-                    "credited_amount": float(deposit_stats["credited_amount"] or 0),
-                },
-                "withdrawal_stats": {
-                    "total_count": int(withdrawal_stats["total_count"] or 0),
-                    "total_amount": float(withdrawal_stats["total_amount"] or 0),
-                    "completed_amount": float(withdrawal_stats["completed_amount"] or 0),
-                    "pending_amount": float(withdrawal_stats["pending_amount"] or 0),
-                },
-                "recent_transactions": [_serialize_tx(t) for t in recent_transactions],
-                "recent_deposits": [_serialize_deposit(d) for d in recent_deposits],
-                "recent_withdrawals": [_serialize_withdrawal(w) for w in recent_withdrawals],
-            }
         }
     finally:
         db.close()
@@ -3563,14 +3011,6 @@ from typing import Optional
 @app.get("/kyc/me")
 def kyc_me(user_id: str):
     user_id = str(user_id).strip()
-
-    viewer_id = request.query_params.get("viewer_id")
-
-    if not viewer_id:
-
-        raise HTTPException(status_code=400, detail="viewer_id required")
-
-    _enforce_hierarchy_scope(db, viewer_id, user_id)
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id required")
 
@@ -3691,54 +3131,28 @@ async def reject_kyc(user_id: str):
 # =========================
 
 @app.get("/admin/kyc/users")
-def admin_kyc_users(viewer_id: str, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+def admin_kyc_users(limit: int = 50, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
     _require_admin(x_admin_key)
     db = SessionLocal()
     try:
-        _enforce_hierarchy_scope(db, viewer_id, viewer_id)
-        tree = _get_subtree_rows(db, viewer_id)
-        ids = [r["id"] for r in tree]
-        rows = db.execute(
-            text("""
-                SELECT
-                    id,
-                    role,
-                    kyc_status,
-                    kyc_level,
-                    auto_withdraw_enabled,
-                    auto_withdraw_limit,
-                    kyc_verified_at,
-                    kyc_reviewed_at,
-                    kyc_rejected_at,
-                    kyc_approved_by,
-                    kyc_rejected_reason,
-                    created_at
-                FROM users
-                WHERE id = ANY(:ids)
-                ORDER BY created_at DESC
-            """),
-            {"ids": ids},
-        ).mappings().all()
+        rows = (
+            db.query(User)
+            .order_by(User.created_at.desc())
+            .limit(limit)
+            .all()
+        )
 
         return {
-            "ok": True,
             "count": len(rows),
             "users": [
                 {
-                    "id": r["id"],
-                    "role": r["role"],
-                    "kyc_status": r["kyc_status"] or "unverified",
-                    "kyc_level": int(r["kyc_level"] or 0),
-                    "auto_withdraw_enabled": bool(r["auto_withdraw_enabled"]) if r["auto_withdraw_enabled"] is not None else False,
-                    "auto_withdraw_limit": float(r["auto_withdraw_limit"] or 0),
-                    "kyc_verified_at": r["kyc_verified_at"].isoformat() if r["kyc_verified_at"] else None,
-                    "kyc_reviewed_at": r["kyc_reviewed_at"].isoformat() if r["kyc_reviewed_at"] else None,
-                    "kyc_rejected_at": r["kyc_rejected_at"].isoformat() if r["kyc_rejected_at"] else None,
-                    "kyc_approved_by": r["kyc_approved_by"],
-                    "kyc_rejected_reason": r["kyc_rejected_reason"],
-                    "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                    "id": u.id,
+                    "kyc_status": getattr(u, "kyc_status", "unverified"),
+                    "kyc_verified_at": u.kyc_verified_at.isoformat() if getattr(u, "kyc_verified_at", None) else None,
+                    "kyc_rejected_reason": getattr(u, "kyc_rejected_reason", None),
+                    "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
                 }
-                for r in rows
+                for u in rows
             ],
         }
     finally:
@@ -3746,38 +3160,19 @@ def admin_kyc_users(viewer_id: str, x_admin_key: str | None = Header(default=Non
 
 
 @app.post("/admin/kyc/users/{user_id}/approve")
-async def admin_kyc_user_approve(user_id: str, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
+def admin_kyc_user_approve(user_id: str):
     user_id = str(user_id).strip()
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id required")
 
-    viewer_id = request.query_params.get("viewer_id")
-    if not viewer_id:
-        raise HTTPException(status_code=400, detail="viewer_id required")
-
-    body = await request.json()
-    level = int(body.get("level", 0) or 0)
-    if level not in (1, 2):
-        raise HTTPException(status_code=400, detail="level must be 1 or 2")
-
-    approved_limit = float(KYC_LEVEL_LIMITS[level])
-
     db = SessionLocal()
     try:
-        _enforce_hierarchy_scope(db, viewer_id, user_id)
-        user = db.query(User).filter(User.id == user_id).with_for_update().one_or_none()
+        user = db.query(User).filter(User.id == user_id).one_or_none()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
         user.kyc_status = "verified"
-        user.kyc_level = level
-        user.auto_withdraw_enabled = True
-        user.auto_withdraw_limit = approved_limit
         user.kyc_verified_at = func.now()
-        user.kyc_reviewed_at = func.now()
-        user.kyc_approved_by = "admin"
-        user.kyc_rejected_at = None
         user.kyc_rejected_reason = None
 
         db.commit()
@@ -3786,9 +3181,6 @@ async def admin_kyc_user_approve(user_id: str, request: Request, x_admin_key: st
             "ok": True,
             "user_id": user_id,
             "kyc_status": "verified",
-            "kyc_level": level,
-            "auto_withdraw_enabled": True,
-            "auto_withdraw_limit": approved_limit,
         }
     except HTTPException:
         db.rollback()
@@ -3804,30 +3196,17 @@ async def admin_kyc_user_reject(user_id: str, request: Request, x_admin_key: str
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id required")
 
-    viewer_id = request.query_params.get("viewer_id")
-    if not viewer_id:
-        raise HTTPException(status_code=400, detail="viewer_id required")
-
     body = await request.json()
-    reason = str(body.get("reason", "")).strip()
-    if not reason:
-        raise HTTPException(status_code=400, detail="reason required")
+    reason = str(body.get("reason", "")).strip() or "KYC rejected by admin"
 
     db = SessionLocal()
     try:
-        _enforce_hierarchy_scope(db, viewer_id, user_id)
-        user = db.query(User).filter(User.id == user_id).with_for_update().one_or_none()
+        user = db.query(User).filter(User.id == user_id).one_or_none()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
         user.kyc_status = "rejected"
-        user.kyc_level = 0
-        user.auto_withdraw_enabled = False
-        user.auto_withdraw_limit = 0
         user.kyc_verified_at = None
-        user.kyc_reviewed_at = func.now()
-        user.kyc_rejected_at = func.now()
-        user.kyc_approved_by = None
         user.kyc_rejected_reason = reason
 
         db.commit()
@@ -3836,9 +3215,6 @@ async def admin_kyc_user_reject(user_id: str, request: Request, x_admin_key: str
             "ok": True,
             "user_id": user_id,
             "kyc_status": "rejected",
-            "kyc_level": 0,
-            "auto_withdraw_enabled": False,
-            "auto_withdraw_limit": 0,
             "reason": reason,
         }
     except HTTPException:
@@ -3858,48 +3234,38 @@ from fastapi.responses import FileResponse
 KYC_UPLOAD_DIR = _Path("/var/www/coin2win/uploads/kyc")
 
 @app.get("/admin/kyc/files/{user_id}")
-def admin_kyc_files(user_id: str, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+def admin_kyc_files(user_id: str, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
     _require_admin(x_admin_key)
     user_id = str(user_id).strip()
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id required")
 
-    viewer_id = request.query_params.get("viewer_id")
-    if not viewer_id:
-        raise HTTPException(status_code=400, detail="viewer_id required")
+    if not KYC_UPLOAD_DIR.exists():
+        return {"user_id": user_id, "files": []}
 
-    db = SessionLocal()
-    try:
-        _enforce_hierarchy_scope(db, viewer_id, user_id)
+    files = []
+    for p in sorted(KYC_UPLOAD_DIR.iterdir()):
+        if p.is_file() and p.name.startswith(f"{user_id}_"):
+            label = "document"
+            low = p.name.lower()
+            if "front" in low:
+                label = "front"
+            elif "back" in low:
+                label = "back"
+            elif "selfie" in low:
+                label = "selfie"
 
-        if not KYC_UPLOAD_DIR.exists():
-            return {"user_id": user_id, "files": []}
+            files.append({
+                "name": p.name,
+                "label": label,
+                "url": f"/api/admin/kyc/file/{user_id}/{p.name}",
+            })
 
-        files = []
-        for p in sorted(KYC_UPLOAD_DIR.iterdir()):
-            if p.is_file() and p.name.startswith(f"{user_id}_"):
-                label = "document"
-                low = p.name.lower()
-                if "front" in low:
-                    label = "front"
-                elif "back" in low:
-                    label = "back"
-                elif "selfie" in low:
-                    label = "selfie"
-
-                files.append({
-                    "name": p.name,
-                    "label": label,
-                    "url": f"/api/admin/kyc/file/{user_id}/{p.name}",
-                })
-
-        return {"user_id": user_id, "files": files}
-    finally:
-        db.close()
+    return {"user_id": user_id, "files": files}
 
 
 @app.get("/admin/kyc/file/{user_id}/{filename}")
-def admin_kyc_file(user_id: str, filename: str, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+def admin_kyc_file(user_id: str, filename: str, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
     _require_admin(x_admin_key)
     user_id = str(user_id).strip()
     filename = str(filename).strip()
@@ -3907,93 +3273,15 @@ def admin_kyc_file(user_id: str, filename: str, request: Request, x_admin_key: s
     if not user_id or not filename:
         raise HTTPException(status_code=400, detail="Invalid file request")
 
-    viewer_id = request.query_params.get("viewer_id")
-    if not viewer_id:
-        raise HTTPException(status_code=400, detail="viewer_id required")
+    target = KYC_UPLOAD_DIR / filename
 
-    db = SessionLocal()
-    try:
-        _enforce_hierarchy_scope(db, viewer_id, user_id)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
 
-        target = KYC_UPLOAD_DIR / filename
+    if not target.name.startswith(f"{user_id}_"):
+        raise HTTPException(status_code=403, detail="Forbidden")
 
-        if not target.exists() or not target.is_file():
-            raise HTTPException(status_code=404, detail="File not found")
-
-        if not target.name.startswith(f"{user_id}_"):
-            raise HTTPException(status_code=403, detail="Forbidden")
-
-        return FileResponse(str(target), filename=target.name)
-    finally:
-        db.close()
-
-
-
-# =========================
-# KYC DETAIL (UNIFIED)
-# =========================
-
-@app.get("/admin/kyc/users/{user_id}")
-def admin_kyc_user_detail(user_id: str, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
-
-    user_id = str(user_id).strip()
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id required")
-
-    viewer_id = request.query_params.get("viewer_id")
-    if not viewer_id:
-        raise HTTPException(status_code=400, detail="viewer_id required")
-
-    db = SessionLocal()
-    try:
-        _enforce_hierarchy_scope(db, viewer_id, user_id)
-
-        user = db.query(User).filter(User.id == user_id).one_or_none()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        files = {
-            "id_document": None,
-            "selfie": None,
-            "proof_of_address": None,
-        }
-
-        if KYC_UPLOAD_DIR.exists():
-            for pth in KYC_UPLOAD_DIR.iterdir():
-                if not pth.is_file():
-                    continue
-                if not pth.name.startswith(f"{user_id}_"):
-                    continue
-
-                low = pth.name.lower()
-                url = f"/api/admin/kyc/file/{user_id}/{pth.name}"
-
-                if "front" in low or "id" in low:
-                    files["id_document"] = url
-                elif "selfie" in low:
-                    files["selfie"] = url
-                elif "poa" in low or "address" in low:
-                    files["proof_of_address"] = url
-
-        return {
-            "ok": True,
-            "user_id": user.id,
-            "role": getattr(user, "role", None),
-            "kyc_status": getattr(user, "kyc_status", "unverified"),
-            "kyc_level": getattr(user, "kyc_level", 0),
-            "auto_withdraw_enabled": getattr(user, "auto_withdraw_enabled", False),
-            "auto_withdraw_limit": float(getattr(user, "auto_withdraw_limit", 0) or 0),
-            "kyc_reviewed_at": user.kyc_reviewed_at.isoformat() if getattr(user, "kyc_reviewed_at", None) else None,
-            "kyc_verified_at": user.kyc_verified_at.isoformat() if getattr(user, "kyc_verified_at", None) else None,
-            "kyc_rejected_at": user.kyc_rejected_at.isoformat() if getattr(user, "kyc_rejected_at", None) else None,
-            "kyc_approved_by": getattr(user, "kyc_approved_by", None),
-            "kyc_rejected_reason": getattr(user, "kyc_rejected_reason", None),
-            "created_at": user.created_at.isoformat() if getattr(user, "created_at", None) else None,
-            "files": files,
-        }
-    finally:
-        db.close()
+    return FileResponse(str(target), filename=target.name)
 
 
 # =========================
@@ -4048,44 +3336,195 @@ def _get_user_hierarchy_row(db, user_id: str):
     return _row_to_dict(row)
 
 
-
-def _normalize_role(role: str | None) -> str:
-    r = str(role or "").strip().lower()
-    if r == "superadmin":
-        return "super_admin"
-    return r
-
-
-def _can_view_admin_hierarchy(role: str | None) -> bool:
-    r = _normalize_role(role)
-    return r in {"super_admin", "admin", "master_agent", "agent", "sub_agent"}
-
-
 def _can_create_child_role(parent_role: str, child_role: str) -> bool:
     parent_role = str(parent_role or "").strip().lower()
     child_role = str(child_role or "").strip().lower()
     return child_role in CHILD_ROLE_RULES.get(parent_role, set())
 
 
-
 def _get_subtree_rows(db, root_user_id: str):
-    rows = db.execute(sa_text("""
-        WITH RECURSIVE tree AS (
-            SELECT id, parent_id, role, 0 as depth
-            FROM users
-            WHERE id = :root_id
+    rows = db.execute(
+        sa_text("""
+            WITH RECURSIVE user_tree AS (
+                SELECT
+                    id,
+                    role,
+                    parent_id,
+                    created_by,
+                    permissions_json,
+                    agent_code,
+                    is_active,
+                    created_at,
+                    0 AS depth
+                FROM users
+                WHERE id = :root_user_id
 
-            UNION ALL
+                UNION ALL
 
-            SELECT u.id, u.parent_id, u.role, t.depth + 1
-            FROM users u
-            JOIN tree t ON u.parent_id = t.id
+                SELECT
+                    u.id,
+                    u.role,
+                    u.parent_id,
+                    u.created_by,
+                    u.permissions_json,
+                    u.agent_code,
+                    u.is_active,
+                    u.created_at,
+                    ut.depth + 1 AS depth
+                FROM users u
+                INNER JOIN user_tree ut ON u.parent_id = ut.id
+            )
+            SELECT *
+            FROM user_tree
+            ORDER BY depth ASC, created_at ASC NULLS LAST, id ASC
+        """),
+        {"root_user_id": root_user_id},
+    ).fetchall()
+
+    return [dict(r._mapping) for r in rows]
+
+
+@app.get("/admin/hierarchy/user/{user_id}")
+def admin_hierarchy_user(
+    user_id: str,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    _require_admin(x_admin_key)
+
+    db = SessionLocal()
+    try:
+        row = _get_user_hierarchy_row(db, user_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {"ok": True, "user": row}
+    finally:
+        db.close()
+
+
+@app.get("/admin/hierarchy/tree/{user_id}")
+def admin_hierarchy_tree(
+    user_id: str,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    _require_admin(x_admin_key)
+
+    db = SessionLocal()
+    try:
+        root = _get_user_hierarchy_row(db, user_id)
+        if not root:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        tree = _get_subtree_rows(db, user_id)
+        return {
+            "ok": True,
+            "root_user_id": user_id,
+            "count": len(tree),
+            "tree": tree,
+        }
+    finally:
+        db.close()
+
+
+@app.post("/admin/hierarchy/create")
+async def admin_hierarchy_create(
+    request: Request,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    _require_admin(x_admin_key)
+
+    body = await request.json()
+
+    user_id = str(body.get("user_id", "")).strip()
+    parent_id = str(body.get("parent_id", "")).strip()
+    role = str(body.get("role", "player")).strip().lower()
+    created_by = str(body.get("created_by", "")).strip() or "admin"
+    permissions_json = body.get("permissions_json")
+    agent_code = str(body.get("agent_code", "")).strip() or None
+    is_active = bool(body.get("is_active", True))
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    if not parent_id:
+        raise HTTPException(status_code=400, detail="parent_id required")
+    if role not in HIERARCHY_ROLES:
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    db = SessionLocal()
+    try:
+        parent = _get_user_hierarchy_row(db, parent_id)
+        if not parent:
+            raise HTTPException(status_code=404, detail="Parent user not found")
+
+        if not _can_create_child_role(parent["role"], role):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Role '{parent['role']}' cannot create child role '{role}'",
+            )
+
+        existing = _get_user_hierarchy_row(db, user_id)
+        if existing:
+            raise HTTPException(status_code=400, detail="user_id already exists")
+
+        db.execute(
+            sa_text("""
+                INSERT INTO users (
+                    id,
+                    role,
+                    parent_id,
+                    created_by,
+                    permissions_json,
+                    agent_code,
+                    is_active
+                )
+                VALUES (
+                    :id,
+                    :role,
+                    :parent_id,
+                    :created_by,
+                    :permissions_json,
+                    :agent_code,
+                    :is_active
+                )
+            """),
+            {
+                "id": user_id,
+                "role": role,
+                "parent_id": parent_id,
+                "created_by": created_by,
+                "permissions_json": permissions_json,
+                "agent_code": agent_code,
+                "is_active": is_active,
+            },
         )
-        SELECT * FROM tree
-        ORDER BY depth, id
-    """), {"root_id": root_user_id}).mappings().all()
+        db.commit()
 
-    return [dict(r) for r in rows]
+        created = _get_user_hierarchy_row(db, user_id)
+
+        return {
+            "ok": True,
+            "user": created,
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+# =========================
+# HIERARCHY ACCESS LOGIC
+# =========================
+
+def _can_view_admin_hierarchy(role: str) -> bool:
+    return str(role or "").strip().lower() in {
+        "super_admin",
+        "admin",
+        "master_agent",
+        "agent",
+        "sub_agent",
+    }
+
+
 def _is_descendant_or_self(db, ancestor_user_id: str, target_user_id: str) -> bool:
     rows = db.execute(
         sa_text("""
@@ -4183,1715 +3622,6 @@ def admin_hierarchy_scoped_tree(
             "count": len(tree),
             "tree": tree,
         }
-    finally:
-        db.close()
-
-
-@app.get("/admin/users")
-def admin_users(viewer_id: str, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
-    db = SessionLocal()
-    try:
-        _enforce_hierarchy_scope(db, viewer_id, viewer_id)
-        tree = _get_subtree_rows(db, viewer_id)
-        ids = [r["id"] for r in tree]
-        rows = db.execute(
-            text("""
-                SELECT
-                    id,
-                    role,
-                    parent_id,
-                    created_by,
-                    agent_code,
-                    is_active,
-                    created_at,
-                    billing_type,
-                    pph_rate,
-                    ggr_share,
-                    service_pph,
-                    service_ggr,
-                    originals_ggr,
-                    casino_ggr,
-                    live_betting_ggr
-                FROM users
-                WHERE id = ANY(:ids)
-                ORDER BY created_at DESC
-            """),
-            {"ids": ids},
-        ).mappings().all()
-
-        return {
-            "ok": True,
-            "count": len(rows),
-            "users": [
-                {
-                    "id": r["id"],
-                    "role": r["role"],
-                    "parent_id": r["parent_id"],
-                    "created_by": r["created_by"],
-                    "agent_code": r["agent_code"],
-                    "is_active": bool(r["is_active"]) if r["is_active"] is not None else True,
-                    "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-                    "billing_type": r["billing_type"],
-                    "pph_rate": float(r["pph_rate"] or 0),
-                    "ggr_share": float(r["ggr_share"] or 0),
-                    "service_pph": float(r["service_pph"] or 0),
-                    "service_ggr": float(r["service_ggr"] or 0),
-                    "originals_ggr": float(r["originals_ggr"] or 0),
-                    "casino_ggr": float(r["casino_ggr"] or 0),
-                    "live_betting_ggr": float(r["live_betting_ggr"] or 0),
-                }
-                for r in rows
-            ],
-        }
-    finally:
-        db.close()
-
-
-@app.get("/admin/crm/low-balance/{viewer_id}")
-def admin_crm_low_balance(
-    viewer_id: str,
-    threshold: float = 10,
-    segment: str = 'low_balance',
-    days: int = 7,
-    x_admin_key: str | None = Header(default=None, alias='X-Admin-Key'),
-):
-    db = SessionLocal()
-    try:
-        _enforce_hierarchy_scope(db, viewer_id, viewer_id)
-        tree = _get_subtree_rows(db, viewer_id)
-        player_ids = [str(r["id"]) for r in tree if r.get("id") and str(r.get("role") or "").strip().lower() == "player"]
-
-        if not player_ids:
-            return {
-                "ok": True,
-                "viewer_id": viewer_id,
-                "threshold": float(threshold),
-                "count": 0,
-                "items": [],
-            }
-        segment = (segment or 'low_balance').lower().strip()
-        days = max(1, min(int(days or 7), 365))
-
-        extra_where = ''
-
-        if segment == 'no_bet':
-            extra_where = "AND (lb.last_bet_at IS NULL OR lb.last_bet_at < NOW() - INTERVAL '%s days')" % days
-        elif segment == 'no_deposit':
-            extra_where = "AND (ld.last_deposit_at IS NULL OR ld.last_deposit_at < NOW() - INTERVAL '%s days')" % days
-        elif segment == 'inactive':
-            extra_where = "AND ( (lb.last_bet_at IS NULL OR lb.last_bet_at < NOW() - INTERVAL '%s days') AND (ld.last_deposit_at IS NULL OR ld.last_deposit_at < NOW() - INTERVAL '%s days') AND (lw.last_withdrawal_at IS NULL OR lw.last_withdrawal_at < NOW() - INTERVAL '%s days') )" % (days, days, days)
-        elif segment == 'high_balance':
-            extra_where = "AND COALESCE(w.balance_available, 0) >= %s" % threshold
-        else:
-            extra_where = "AND COALESCE(w.balance_available, 0) <= %s" % threshold
-
-        rows = db.execute(sa_text("""
-            WITH last_bets AS (
-                SELECT user_id, MAX(created_at) AS last_bet_at
-                FROM (
-                    SELECT user_id, created_at FROM dice_bets
-                    UNION ALL
-                    SELECT user_id, created_at FROM crash_bets
-                    UNION ALL
-                    SELECT user_id, created_at FROM global_crash_bets
-                ) gaming_activity
-                GROUP BY user_id
-            ),
-            last_deposits AS (
-                SELECT user_id, MAX(created_at) AS last_deposit_at
-                FROM deposits
-                GROUP BY user_id
-            ),
-            last_withdrawals AS (
-                SELECT user_id, MAX(created_at) AS last_withdrawal_at
-                FROM withdrawals
-                GROUP BY user_id
-            )
-            SELECT
-                u.id AS user_id,
-                u.parent_id,
-                u.role,
-                COALESCE(cu.is_active, u.is_active, TRUE) AS is_active,
-                cu.username,
-                cu.full_name,
-                COALESCE(cu.email, u.email) AS email,
-                cu.telegram,
-                COALESCE(w.balance_available, 0) AS balance_available,
-                COALESCE(w.balance_total, 0) AS balance_total,
-                COALESCE(w.balance_pending, 0) AS balance_pending,
-                lb.last_bet_at,
-                ld.last_deposit_at,
-                lw.last_withdrawal_at
-            FROM users u
-            LEFT JOIN c2w_users cu ON cu.user_id = u.id
-            LEFT JOIN wallets w ON w.user_id = u.id
-            LEFT JOIN last_bets lb ON lb.user_id = u.id
-            LEFT JOIN last_deposits ld ON ld.user_id = u.id
-            LEFT JOIN last_withdrawals lw ON lw.user_id = u.id
-                WHERE u.id = ANY(:player_ids)
-                  AND LOWER(COALESCE(u.role, '')) = 'player'
-                  """ + extra_where + """
-        """), {"player_ids": player_ids, "threshold": float(threshold)}).mappings().all()
-
-        return {
-            "ok": True,
-            "viewer_id": viewer_id,
-            "threshold": float(threshold),
-            "count": len(rows),
-            "items": [
-                {
-                    "user_id": r["user_id"],
-                    "parent_id": r["parent_id"],
-                    "role": r["role"],
-                    "is_active": bool(r["is_active"]) if r["is_active"] is not None else True,
-                    "username": r["username"],
-                    "full_name": r["full_name"],
-                    "email": r["email"],
-                    "telegram": r["telegram"],
-                    "balance_available": float(r["balance_available"] or 0),
-                    "balance_total": float(r["balance_total"] or 0),
-                    "balance_pending": float(r["balance_pending"] or 0),
-                    "trigger_type": segment,
-                    "suggested_reason": ('loss_rebate' if segment=='low_balance' else 'reactivation_bonus' if segment in ['no_bet','inactive'] else 'deposit_bonus' if segment=='no_deposit' else 'play_push'),
-                    "last_bet_at": r["last_bet_at"].isoformat() if r["last_bet_at"] else None,
-                    "last_deposit_at": r["last_deposit_at"].isoformat() if r["last_deposit_at"] else None,
-                    "last_withdrawal_at": r["last_withdrawal_at"].isoformat() if r["last_withdrawal_at"] else None,
-                }
-                for r in rows
-            ],
-        }
-    finally:
-        db.close()
-
-
-@app.post("/admin/billing/edge")
-def set_billing_edge(payload: dict, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
-
-    parent_id = str(payload.get("parent_id") or "").strip()
-    child_id = str(payload.get("child_id") or "").strip()
-
-    if not parent_id or not child_id:
-        raise HTTPException(status_code=400, detail="Missing IDs")
-
-    with engine.begin() as conn:
-        conn.execute(text("""
-            UPDATE billing_edges
-            SET is_active = FALSE,
-                updated_at = NOW()
-            WHERE child_id = :child_id
-              AND parent_id <> :parent_id
-              AND is_active = TRUE
-        """), {
-            "child_id": child_id,
-            "parent_id": parent_id,
-        })
-
-        conn.execute(text("""
-            INSERT INTO billing_edges (
-                parent_id, child_id, billing_type,
-                pph_rate, ggr_share, billing_cycle,
-                sportsbook_enabled, casino_enabled, crash_enabled,
-                is_active, updated_at
-            ) VALUES (
-                :parent_id, :child_id, :billing_type,
-                :pph_rate, :ggr_share, 'monthly',
-                :sportsbook_enabled, :casino_enabled, :crash_enabled,
-                TRUE, NOW()
-            )
-            ON CONFLICT (parent_id, child_id)
-            DO UPDATE SET
-                billing_type = EXCLUDED.billing_type,
-                pph_rate = EXCLUDED.pph_rate,
-                ggr_share = EXCLUDED.ggr_share,
-                billing_cycle = EXCLUDED.billing_cycle,
-                sportsbook_enabled = EXCLUDED.sportsbook_enabled,
-                casino_enabled = EXCLUDED.casino_enabled,
-                crash_enabled = EXCLUDED.crash_enabled,
-                is_active = TRUE,
-                updated_at = NOW()
-        """), {
-            "parent_id": parent_id,
-            "child_id": child_id,
-            "billing_type": str(payload.get("billing_type") or "hybrid"),
-            "pph_rate": float(payload.get("pph_rate") or 0),
-            "ggr_share": float(payload.get("ggr_share") or 0),
-            "sportsbook_enabled": bool(payload.get("sportsbook_enabled", True)),
-            "casino_enabled": bool(payload.get("casino_enabled", True)),
-            "crash_enabled": bool(payload.get("crash_enabled", True)),
-        })
-
-    return {"ok": True}
-
-
-
-
-@app.get("/admin/agent-dashboard/{viewer_id}")
-def admin_agent_dashboard(
-    viewer_id: str,
-    days: int = 30,
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
-):
-    _require_admin(x_admin_key)
-
-    days = max(1, min(int(days), 365))
-
-    db = SessionLocal()
-    try:
-        viewer = _enforce_hierarchy_scope(db, viewer_id, viewer_id)
-        tree = _get_subtree_rows(db, viewer_id)
-        ids = [str(r["id"]) for r in tree if r.get("id")]
-        player_ids = [str(r["id"]) for r in tree if str(r.get("role") or "").strip().lower() == "player"]
-
-        viewer_row = db.execute(text("""
-            SELECT
-                id,
-                role,
-                parent_id,
-                created_by,
-                agent_code,
-                is_active,
-                created_at,
-                billing_type,
-                pph_rate,
-                ggr_share,
-                service_pph,
-                service_ggr,
-                originals_ggr,
-                casino_ggr,
-                live_betting_ggr
-            FROM users
-            WHERE id = :viewer_id
-            LIMIT 1
-        """), {"viewer_id": viewer_id}).mappings().first()
-
-        wallet_row = db.execute(text("""
-            SELECT
-                COALESCE(SUM(balance_total), 0) AS balance_total,
-                COALESCE(SUM(balance_available), 0) AS balance_available
-            FROM wallets
-            WHERE user_id = ANY(:ids)
-        """), {"ids": ids}).mappings().first() if ids else {
-            "balance_total": 0,
-            "balance_available": 0,
-        }
-
-        active_players = db.execute(text("""
-            WITH recent_activity AS (
-                SELECT DISTINCT user_id
-                FROM crash_bets
-                WHERE created_at >= NOW() - CAST((:days || ' days') AS interval)
-
-                UNION
-
-                SELECT DISTINCT user_id
-                FROM global_crash_bets
-                WHERE created_at >= NOW() - CAST((:days || ' days') AS interval)
-
-                UNION
-
-                SELECT DISTINCT user_id
-                FROM dice_bets
-                WHERE created_at >= NOW() - CAST((:days || ' days') AS interval)
-            )
-            SELECT COUNT(*) AS active_players
-            FROM recent_activity
-            WHERE user_id = ANY(:player_ids)
-        """), {"days": days, "player_ids": player_ids}).scalar() if player_ids else 0
-
-        crash_ggr = db.execute(text("""
-            SELECT COALESCE(SUM(amount_usd - payout), 0)
-            FROM crash_bets
-            WHERE user_id = ANY(:ids)
-        """), {"ids": ids}).scalar() if ids else 0
-
-        global_crash_ggr = db.execute(text("""
-            SELECT COALESCE(SUM(amount_usd - payout), 0)
-            FROM global_crash_bets
-            WHERE user_id = ANY(:ids)
-        """), {"ids": ids}).scalar() if ids else 0
-
-        dice_ggr = db.execute(text("""
-            SELECT COALESCE(SUM(amount_usd - payout), 0)
-            FROM dice_bets
-            WHERE user_id = ANY(:ids)
-        """), {"ids": ids}).scalar() if ids else 0
-
-        billing_history_rows = db.execute(text("""
-            SELECT
-                id,
-                billing_mode,
-                period_key,
-                total_amount,
-                details_json,
-                created_at
-            FROM billing_runs
-            WHERE parent_id = :viewer_id OR child_id = :viewer_id OR agent_id = :viewer_id
-            ORDER BY created_at DESC
-            LIMIT 20
-        """), {"viewer_id": viewer_id}).mappings().all()
-
-        billing_edges_rows = db.execute(text("""
-            SELECT
-                id,
-                parent_id,
-                child_id,
-                billing_type,
-                billing_cycle,
-                pph_rate,
-                ggr_share,
-                sportsbook_enabled,
-                casino_enabled,
-                crash_enabled,
-                is_active,
-                created_at,
-                updated_at
-            FROM billing_edges
-            WHERE parent_id = ANY(:ids) OR child_id = ANY(:ids)
-            ORDER BY updated_at DESC NULLS LAST, id DESC
-        """), {"ids": ids}).mappings().all() if ids else []
-
-        return {
-            "ok": True,
-            "viewer": {
-                "id": viewer_row["id"] if viewer_row else viewer_id,
-                "role": viewer_row["role"] if viewer_row else viewer.get("role"),
-                "parent_id": viewer_row["parent_id"] if viewer_row else None,
-                "created_by": viewer_row["created_by"] if viewer_row else None,
-                "agent_code": viewer_row["agent_code"] if viewer_row else None,
-                "is_active": bool(viewer_row["is_active"]) if viewer_row and viewer_row["is_active"] is not None else True,
-                "created_at": viewer_row["created_at"].isoformat() if viewer_row and viewer_row["created_at"] else None,
-                "billing_type": viewer_row["billing_type"] if viewer_row else None,
-                "pph_rate": float(viewer_row["pph_rate"] or 0) if viewer_row else 0.0,
-                "ggr_share": float(viewer_row["ggr_share"] or 0) if viewer_row else 0.0,
-            },
-            "summary": {
-                "balance_total": float((wallet_row or {}).get("balance_total") or 0),
-                "balance_available": float((wallet_row or {}).get("balance_available") or 0),
-                "active_players": int(active_players or 0),
-                "downline_count": max(len(ids) - 1, 0),
-                "ggr": float((crash_ggr or 0) + (global_crash_ggr or 0) + (dice_ggr or 0)),
-                "ggr_breakdown": {
-                    "crash": float(crash_ggr or 0),
-                    "global_crash": float(global_crash_ggr or 0),
-                    "dice": float(dice_ggr or 0),
-                    "casino_aggregator": 0.0,
-                    "sportsbook": 0.0,
-                },
-                "activity_window_days": days,
-            },
-            "hierarchy": {
-                "viewer_id": viewer_id,
-                "viewer_role": viewer.get("role"),
-                "count": len(tree),
-                "tree": tree,
-            },
-            "billing_config": {
-                "service_pph": float(viewer_row["service_pph"] or 0) if viewer_row else 0.0,
-                "service_ggr": float(viewer_row["service_ggr"] or 0) if viewer_row else 0.0,
-                "originals_ggr": float(viewer_row["originals_ggr"] or 0) if viewer_row else 0.0,
-                "casino_ggr": float(viewer_row["casino_ggr"] or 0) if viewer_row else 0.0,
-                "live_betting_ggr": float(viewer_row["live_betting_ggr"] or 0) if viewer_row else 0.0,
-                "edges": [
-                    {
-                        "id": r["id"],
-                        "parent_id": r["parent_id"],
-                        "child_id": r["child_id"],
-                        "billing_type": r["billing_type"],
-                        "billing_cycle": r["billing_cycle"],
-                        "pph_rate": float(r["pph_rate"] or 0),
-                        "ggr_share": float(r["ggr_share"] or 0),
-                        "sportsbook_enabled": bool(r["sportsbook_enabled"]) if r["sportsbook_enabled"] is not None else False,
-                        "casino_enabled": bool(r["casino_enabled"]) if r["casino_enabled"] is not None else False,
-                        "crash_enabled": bool(r["crash_enabled"]) if r["crash_enabled"] is not None else False,
-                        "is_active": bool(r["is_active"]) if r["is_active"] is not None else True,
-                        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-                        "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
-                    }
-                    for r in billing_edges_rows
-                ],
-            },
-            "billing_history": [
-                {
-                    "id": r["id"],
-                    "billing_mode": r["billing_mode"],
-                    "period_key": r["period_key"],
-                    "total_amount": float(r["total_amount"] or 0),
-                    "details_json": r["details_json"],
-                    "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-                }
-                for r in billing_history_rows
-            ],
-        }
-    finally:
-        db.close()
-
-
-
-@app.post("/admin/billing/sync-edge/{child_id}")
-def admin_billing_sync_edge(
-    child_id: str,
-    payload: dict = {},
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
-):
-    _require_admin(x_admin_key)
-
-    db = SessionLocal()
-    try:
-        child = db.execute(text("""
-            SELECT id, role, parent_id
-            FROM users
-            WHERE id = :child_id
-            LIMIT 1
-        """), {"child_id": child_id}).mappings().first()
-
-        if not child:
-            raise HTTPException(status_code=404, detail="Child user not found")
-
-        child_role = str(child["role"] or "").strip().lower()
-        if child_role not in ("agent", "subagent", "master", "masteragent"):
-            raise HTTPException(status_code=400, detail="Billing can only be enabled for agent-type users")
-
-        parent_id = str(child["parent_id"] or "").strip()
-        if not parent_id:
-            raise HTTPException(status_code=400, detail="Child has no parent_id")
-
-        parent = db.execute(text("""
-            SELECT id, role
-            FROM users
-            WHERE id = :parent_id
-            LIMIT 1
-        """), {"parent_id": parent_id}).mappings().first()
-
-        if not parent:
-            raise HTTPException(status_code=404, detail="Parent user not found")
-
-        billing_type = str(payload.get("billing_type") or "hybrid").strip() or "hybrid"
-        pph_rate = float(payload.get("pph_rate") or 0)
-        ggr_share = float(payload.get("ggr_share") or 0)
-        billing_cycle = str(payload.get("billing_cycle") or "monthly").strip() or "monthly"
-        sportsbook_enabled = bool(payload.get("sportsbook_enabled", True))
-        casino_enabled = bool(payload.get("casino_enabled", True))
-        crash_enabled = bool(payload.get("crash_enabled", True))
-
-        with engine.begin() as conn:
-            conn.execute(text("""
-                UPDATE billing_edges
-                SET is_active = FALSE,
-                    updated_at = NOW()
-                WHERE child_id = :child_id
-                  AND is_active = TRUE
-                  AND parent_id <> :parent_id
-            """), {
-                "child_id": child_id,
-                "parent_id": parent_id,
-            })
-
-            conn.execute(text("""
-                INSERT INTO billing_edges (
-                    parent_id,
-                    child_id,
-                    billing_type,
-                    pph_rate,
-                    ggr_share,
-                    billing_cycle,
-                    sportsbook_enabled,
-                    casino_enabled,
-                    crash_enabled,
-                    is_active,
-                    updated_at
-                ) VALUES (
-                    :parent_id,
-                    :child_id,
-                    :billing_type,
-                    :pph_rate,
-                    :ggr_share,
-                    :billing_cycle,
-                    :sportsbook_enabled,
-                    :casino_enabled,
-                    :crash_enabled,
-                    TRUE,
-                    NOW()
-                )
-                ON CONFLICT (parent_id, child_id)
-                DO UPDATE SET
-                    billing_type = EXCLUDED.billing_type,
-                    pph_rate = EXCLUDED.pph_rate,
-                    ggr_share = EXCLUDED.ggr_share,
-                    billing_cycle = EXCLUDED.billing_cycle,
-                    sportsbook_enabled = EXCLUDED.sportsbook_enabled,
-                    casino_enabled = EXCLUDED.casino_enabled,
-                    crash_enabled = EXCLUDED.crash_enabled,
-                    is_active = TRUE,
-                    updated_at = NOW()
-            """), {
-                "parent_id": parent_id,
-                "child_id": child_id,
-                "billing_type": billing_type,
-                "pph_rate": pph_rate,
-                "ggr_share": ggr_share,
-                "billing_cycle": billing_cycle,
-                "sportsbook_enabled": sportsbook_enabled,
-                "casino_enabled": casino_enabled,
-                "crash_enabled": crash_enabled,
-            })
-
-        edge = db.execute(text("""
-            SELECT
-                id,
-                parent_id,
-                child_id,
-                billing_type,
-                billing_cycle,
-                pph_rate,
-                ggr_share,
-                sportsbook_enabled,
-                casino_enabled,
-                crash_enabled,
-                is_active,
-                created_at,
-                updated_at
-            FROM billing_edges
-            WHERE parent_id = :parent_id
-              AND child_id = :child_id
-            LIMIT 1
-        """), {
-            "parent_id": parent_id,
-            "child_id": child_id,
-        }).mappings().first()
-
-        return {
-            "ok": True,
-            "message": "Billing relationship synced to current parent",
-            "parent_id": parent_id,
-            "child_id": child_id,
-            "edge": {
-                "id": edge["id"] if edge else None,
-                "parent_id": edge["parent_id"] if edge else parent_id,
-                "child_id": edge["child_id"] if edge else child_id,
-                "billing_type": edge["billing_type"] if edge else billing_type,
-                "billing_cycle": edge["billing_cycle"] if edge else billing_cycle,
-                "pph_rate": float(edge["pph_rate"] or 0) if edge else pph_rate,
-                "ggr_share": float(edge["ggr_share"] or 0) if edge else ggr_share,
-                "sportsbook_enabled": bool(edge["sportsbook_enabled"]) if edge and edge["sportsbook_enabled"] is not None else sportsbook_enabled,
-                "casino_enabled": bool(edge["casino_enabled"]) if edge and edge["casino_enabled"] is not None else casino_enabled,
-                "crash_enabled": bool(edge["crash_enabled"]) if edge and edge["crash_enabled"] is not None else crash_enabled,
-                "is_active": bool(edge["is_active"]) if edge and edge["is_active"] is not None else True,
-                "created_at": edge["created_at"].isoformat() if edge and edge["created_at"] else None,
-                "updated_at": edge["updated_at"].isoformat() if edge and edge["updated_at"] else None,
-            }
-        }
-    finally:
-        db.close()
-
-
-
-@app.get("/admin/billing/summary")
-def admin_billing_summary(
-    viewer_id: str,
-    period_key: str,
-    days: int = 30,
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
-):
-    _require_admin(x_admin_key)
-
-    days = max(1, min(int(days), 365))
-
-    db = SessionLocal()
-    try:
-        viewer = _enforce_hierarchy_scope(db, viewer_id, viewer_id)
-        tree = _get_subtree_rows(db, viewer_id)
-        ids = [str(r["id"]) for r in tree if r.get("id")]
-        player_ids = [str(r["id"]) for r in tree if str(r.get("role") or "").strip().lower() == "player"]
-
-        viewer_row = db.execute(text("""
-            SELECT
-                id,
-                role,
-                parent_id,
-                created_by,
-                agent_code,
-                is_active,
-                created_at,
-                billing_type,
-                pph_rate,
-                ggr_share,
-                service_pph,
-                service_ggr,
-                originals_ggr,
-                casino_ggr,
-                live_betting_ggr
-            FROM users
-            WHERE id = :viewer_id
-            LIMIT 1
-        """), {"viewer_id": viewer_id}).mappings().first()
-
-        active_players = db.execute(text("""
-            WITH recent_activity AS (
-                SELECT DISTINCT user_id
-                FROM crash_bets
-                WHERE created_at >= NOW() - CAST((:days || ' days') AS interval)
-
-                UNION
-
-                SELECT DISTINCT user_id
-                FROM global_crash_bets
-                WHERE created_at >= NOW() - CAST((:days || ' days') AS interval)
-
-                UNION
-
-                SELECT DISTINCT user_id
-                FROM dice_bets
-                WHERE created_at >= NOW() - CAST((:days || ' days') AS interval)
-            )
-            SELECT COUNT(*) AS active_players
-            FROM recent_activity
-            WHERE user_id = ANY(:player_ids)
-        """), {"days": days, "player_ids": player_ids}).scalar() if player_ids else 0
-
-        billing_edges_rows = db.execute(text("""
-            SELECT
-                id,
-                parent_id,
-                child_id,
-                billing_type,
-                billing_cycle,
-                pph_rate,
-                ggr_share,
-                sportsbook_enabled,
-                casino_enabled,
-                crash_enabled,
-                is_active,
-                created_at,
-                updated_at
-            FROM billing_edges
-            WHERE parent_id = ANY(:ids) OR child_id = ANY(:ids)
-            ORDER BY updated_at DESC NULLS LAST, id DESC
-        """), {"ids": ids}).mappings().all() if ids else []
-
-        runs_rows = db.execute(text("""
-            SELECT
-                id,
-                parent_id,
-                child_id,
-                agent_id,
-                billing_mode,
-                period_key,
-                player_count,
-                sportsbook_ggr,
-                casino_ggr,
-                crash_ggr,
-                pph_amount,
-                ggr_amount,
-                total_amount,
-                details_json,
-                created_at
-            FROM billing_runs
-            WHERE period_key = :period_key
-              AND (parent_id = ANY(:ids) OR child_id = ANY(:ids) OR agent_id = ANY(:ids))
-            ORDER BY created_at DESC, id DESC
-        """), {"period_key": period_key, "ids": ids}).mappings().all() if ids else []
-
-        run_map = {}
-        for r in runs_rows:
-            run_map[(str(r["parent_id"]), str(r["child_id"]))] = r
-
-        edges = []
-        summary_player_count = 0
-        summary_pph_amount = 0.0
-        summary_ggr_amount = 0.0
-        summary_total_amount = 0.0
-        summary_sportsbook_ggr = 0.0
-        summary_casino_ggr = 0.0
-        summary_crash_ggr = 0.0
-
-        for r in billing_edges_rows:
-            key = (str(r["parent_id"]), str(r["child_id"]))
-            run = run_map.get(key)
-            has_run = run is not None
-
-            edge_item = {
-                "id": r["id"],
-                "parent_id": r["parent_id"],
-                "child_id": r["child_id"],
-                "billing_type": r["billing_type"],
-                "billing_cycle": r["billing_cycle"],
-                "pph_rate": float(r["pph_rate"] or 0),
-                "ggr_share": float(r["ggr_share"] or 0),
-                "sportsbook_enabled": bool(r["sportsbook_enabled"]) if r["sportsbook_enabled"] is not None else False,
-                "casino_enabled": bool(r["casino_enabled"]) if r["casino_enabled"] is not None else False,
-                "crash_enabled": bool(r["crash_enabled"]) if r["crash_enabled"] is not None else False,
-                "is_active": bool(r["is_active"]) if r["is_active"] is not None else True,
-                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-                "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
-                "has_run": has_run,
-                "run": None,
-            }
-
-            if run:
-                edge_item["run"] = {
-                    "id": run["id"],
-                    "agent_id": run["agent_id"],
-                    "billing_mode": run["billing_mode"],
-                    "period_key": run["period_key"],
-                    "player_count": int(run["player_count"] or 0),
-                    "sportsbook_ggr": float(run["sportsbook_ggr"] or 0),
-                    "casino_ggr": float(run["casino_ggr"] or 0),
-                    "crash_ggr": float(run["crash_ggr"] or 0),
-                    "originals_ggr": float(run["crash_ggr"] or 0),
-                    "pph_amount": float(run["pph_amount"] or 0),
-                    "ggr_amount": float(run["ggr_amount"] or 0),
-                    "total_amount": float(run["total_amount"] or 0),
-                    "details_json": run["details_json"],
-                    "created_at": run["created_at"].isoformat() if run["created_at"] else None,
-                }
-
-                summary_player_count += int(run["player_count"] or 0)
-                summary_pph_amount += float(run["pph_amount"] or 0)
-                summary_ggr_amount += float(run["ggr_amount"] or 0)
-                summary_total_amount += float(run["total_amount"] or 0)
-                summary_sportsbook_ggr += float(run["sportsbook_ggr"] or 0)
-                summary_casino_ggr += float(run["casino_ggr"] or 0)
-                summary_crash_ggr += float(run["crash_ggr"] or 0)
-
-            edges.append(edge_item)
-
-        active_edges = [e for e in edges if e.get("is_active")]
-        inactive_edges = [e for e in edges if not e.get("is_active")]
-
-        return {
-            "ok": True,
-            "viewer": {
-                "id": viewer_row["id"] if viewer_row else viewer_id,
-                "role": viewer_row["role"] if viewer_row else viewer.get("role"),
-                "parent_id": viewer_row["parent_id"] if viewer_row else None,
-                "created_by": viewer_row["created_by"] if viewer_row else None,
-                "agent_code": viewer_row["agent_code"] if viewer_row else None,
-                "is_active": bool(viewer_row["is_active"]) if viewer_row and viewer_row["is_active"] is not None else True,
-                "created_at": viewer_row["created_at"].isoformat() if viewer_row and viewer_row["created_at"] else None,
-                "billing_type": viewer_row["billing_type"] if viewer_row else None,
-                "pph_rate": float(viewer_row["pph_rate"] or 0) if viewer_row else 0.0,
-                "ggr_share": float(viewer_row["ggr_share"] or 0) if viewer_row else 0.0,
-            },
-            "period_key": period_key,
-            "summary": {
-                "edge_count": len(edges),
-                "active_relationship_count": len(active_edges),
-                "inactive_relationship_count": len(inactive_edges),
-                "run_count": sum(1 for e in edges if e["has_run"]),
-                "has_any_run": any(e["has_run"] for e in edges),
-                "player_count": int(summary_player_count),
-                "active_players": int(active_players or 0),
-                "pph_amount": round(summary_pph_amount, 2),
-                "ggr_amount": round(summary_ggr_amount, 2),
-                "total_amount": round(summary_total_amount, 2),
-                "sportsbook_ggr": round(summary_sportsbook_ggr, 2),
-                "casino_ggr": round(summary_casino_ggr, 2),
-                "crash_ggr": round(summary_crash_ggr, 2),
-                "originals_ggr": round(summary_crash_ggr, 2),
-                "activity_window_days": days,
-            },
-            "edges": edges,
-            "active_relationships": active_edges,
-            "inactive_relationships": inactive_edges,
-        }
-    finally:
-        db.close()
-
-
-@app.post("/admin/billing/run-global")
-def admin_billing_run_global(payload: dict = {}, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
-    period_key = str(payload.get("period_key") or datetime.now(timezone.utc).strftime("%Y-%m"))
-    from app.billing_runner import run_global_billing
-    return {"ok": True, "runs": run_global_billing(period_key)}
-# ==========================
-# DASHBOARD SUMMARY (AUTO)
-# ==========================
-from datetime import datetime, timedelta, timezone
-from sqlalchemy import func
-
-ORIGINALS_GGR_SOURCES = [
-    {"key": "dice", "model": DiceBet},
-    {"key": "crash", "model": CrashBet},
-    {"key": "global_crash", "model": GlobalCrashBet},
-]
-
-def _utc_now():
-    return datetime.now(timezone.utc)
-
-def _today_bounds_utc():
-    now = _utc_now()
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    end = start + timedelta(days=1)
-    return start, end
-
-def _last_24h_start_utc():
-    return _utc_now() - timedelta(hours=24)
-
-def _scoped_user_ids(db, viewer_id: str | None):
-    if not viewer_id:
-        return None
-    _enforce_hierarchy_scope(db, viewer_id, viewer_id)
-    tree = _get_subtree_rows(db, viewer_id)
-    return [str(r["id"]) for r in tree]
-
-def _sum(x): return round(float(x or 0), 2)
-def _count(x): return int(x or 0)
-
-def _dashboard_summary(db, scoped_ids=None, viewer_id=None):
-    today_start, today_end = _today_bounds_utc()
-    last_24h = _last_24h_start_utc()
-
-    # deposits (transactions)
-    tx = db.query(Transaction).filter(Transaction.type=="deposit")
-    if scoped_ids: tx = tx.filter(Transaction.user_id.in_(scoped_ids))
-
-    dep_today = _sum(tx.filter(Transaction.created_at>=today_start, Transaction.created_at<today_end).with_entities(func.sum(Transaction.amount)).scalar())
-    dep_count = _count(tx.filter(Transaction.created_at>=today_start, Transaction.created_at<today_end).with_entities(func.count()).scalar())
-
-    # withdrawals
-    wd = db.query(Withdrawal)
-    if scoped_ids: wd = wd.filter(Withdrawal.user_id.in_(scoped_ids))
-
-    requested = _sum(wd.filter(Withdrawal.status=="requested").with_entities(func.sum(Withdrawal.amount_usd)).scalar())
-    approved  = _sum(wd.filter(Withdrawal.status=="approved").with_entities(func.sum(Withdrawal.amount_usd)).scalar())
-    sent      = _sum(wd.filter(Withdrawal.status=="sent").with_entities(func.sum(Withdrawal.amount_usd)).scalar())
-
-    completed_today = _sum(
-        wd.filter(
-            Withdrawal.status=="completed",
-            Withdrawal.completed_at>=today_start,
-            Withdrawal.completed_at<today_end
-        ).with_entities(func.sum(Withdrawal.amount_usd)).scalar()
-    )
-
-    # GGR originals
-    breakdown = {}
-    originals_total = 0
-
-    for s in ORIGINALS_GGR_SOURCES:
-        m = s["model"]
-        q = db.query(func.coalesce(func.sum(m.amount_usd),0), func.coalesce(func.sum(m.payout),0))
-        if scoped_ids: q = q.filter(m.user_id.in_(scoped_ids))
-        a,p = q.one()
-        g = round(float(a)-float(p),2)
-        breakdown[s["key"]] = g
-        originals_total += g
-
-    originals_total = round(originals_total,2)
-
-    # players active
-    active = set()
-    for q in [
-        db.query(Transaction.user_id).filter(Transaction.created_at>=last_24h),
-        db.query(Withdrawal.user_id).filter(Withdrawal.created_at>=last_24h),
-    ]:
-        if scoped_ids: q = q.filter(q.column_descriptions[0]["entity"].user_id.in_(scoped_ids))
-        active.update([x[0] for x in q.distinct().all() if x[0]])
-
-    return {
-        "deposits": {
-            "today": dep_today,
-            "count": dep_count
-        },
-        "withdrawals": {
-            "requested": requested,
-            "approved": approved,
-            "sent": sent,
-            "completed_today": completed_today
-        },
-        "risk": {
-            "open_withdrawals": round(requested+approved+sent,2)
-        },
-        "cashflow": {
-            "net_today": round(dep_today - completed_today,2)
-        },
-        "ggr": {
-            "total_platform_ggr": originals_total,
-            "originals_total": originals_total,
-            "sportsbook_total": 0.0,
-            "vendor_casino_total": 0.0,
-            "originals_breakdown": breakdown
-        },
-        "player_performance": {"top_winners": top_winners, "top_losers": top_losers},
-            "players": {
-            "active_24h": len(active)
-        }
-    }
-
-@app.get("/admin/dashboard/summary")
-def admin_dashboard_summary(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
-    db = SessionLocal()
-    try:
-        return _dashboard_summary(db)
-    finally:
-        db.close()
-
-@app.get("/agent/dashboard/summary")
-def agent_dashboard_summary(viewer_id: str, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
-    db = SessionLocal()
-    try:
-        ids = _scoped_user_ids(db, viewer_id)
-        return _dashboard_summary(db, ids, viewer_id)
-    finally:
-        db.close()
-
-
-# ==========================
-# DASHBOARD RANGE PATCH
-# ==========================
-
-def _range_bounds(range_key: str):
-    now = _utc_now()
-
-    if range_key == "7d":
-        return now - timedelta(days=7), now
-    if range_key == "30d":
-        return now - timedelta(days=30), now
-    if range_key == "90d":
-        return now - timedelta(days=90), now
-    if range_key == "180d":
-        return now - timedelta(days=180), now
-
-    # default today
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    end = start + timedelta(days=1)
-    return start, end
-
-
-def _dashboard_summary_range(db, scoped_ids=None, viewer_id=None, range_key="today"):
-    start, end = _range_bounds(range_key)
-
-    # deposits
-    tx = db.query(Transaction).filter(Transaction.type=="deposit")
-    if scoped_ids: tx = tx.filter(Transaction.user_id.in_(scoped_ids))
-
-    deposits = _sum(
-        tx.filter(Transaction.created_at>=start, Transaction.created_at<end)
-        .with_entities(func.sum(Transaction.amount)).scalar()
-    )
-
-    deposit_count = _count(
-        tx.filter(Transaction.created_at>=start, Transaction.created_at<end)
-        .with_entities(func.count()).scalar()
-    )
-
-    # withdrawals
-    wd = db.query(Withdrawal)
-    if scoped_ids: wd = wd.filter(Withdrawal.user_id.in_(scoped_ids))
-
-    completed = _sum(
-        wd.filter(
-            Withdrawal.status=="completed",
-            Withdrawal.completed_at>=start,
-            Withdrawal.completed_at<end
-        ).with_entities(func.sum(Withdrawal.amount_usd)).scalar()
-    )
-
-    # GGR
-    breakdown = {}
-    originals_total = 0
-
-    for s in ORIGINALS_GGR_SOURCES:
-        m = s["model"]
-        q = db.query(func.coalesce(func.sum(m.amount_usd),0), func.coalesce(func.sum(m.payout),0))
-        if scoped_ids: q = q.filter(m.user_id.in_(scoped_ids))
-        q = q.filter(m.created_at>=start, m.created_at<end)
-
-        a,p = q.one()
-        g = round(float(a)-float(p),2)
-        breakdown[s["key"]] = g
-        originals_total += g
-
-    originals_total = round(originals_total,2)
-
-    # players active
-    active = set()
-    for q in [
-        db.query(Transaction.user_id).filter(Transaction.created_at>=start),
-        db.query(Withdrawal.user_id).filter(Withdrawal.created_at>=start),
-    ]:
-        if scoped_ids: q = q.filter(q.column_descriptions[0]["entity"].user_id.in_(scoped_ids))
-        active.update([x[0] for x in q.distinct().all() if x[0]])
-
-    # risk stays live (no range)
-    wd_live = db.query(Withdrawal)
-    if scoped_ids: wd_live = wd_live.filter(Withdrawal.user_id.in_(scoped_ids))
-
-    requested = _sum(wd_live.filter(Withdrawal.status=="requested").with_entities(func.sum(Withdrawal.amount_usd)).scalar())
-    approved  = _sum(wd_live.filter(Withdrawal.status=="approved").with_entities(func.sum(Withdrawal.amount_usd)).scalar())
-    sent      = _sum(wd_live.filter(Withdrawal.status=="sent").with_entities(func.sum(Withdrawal.amount_usd)).scalar())
-
-
-    # player performance (global platform-ready; originals active now)
-    player_map = {}
-
-    def _accumulate_player(user_id, wager, payout, vertical):
-        if not user_id:
-            return
-        uid = str(user_id)
-        if uid not in player_map:
-            player_map[uid] = {
-                "user_id": uid,
-                "wagered": 0.0,
-                "net": 0.0,
-                "breakdown": {
-                    "originals": 0.0,
-                    "sportsbook": 0.0,
-                    "vendor_casino": 0.0,
-                },
-            }
-        wager = float(wager or 0.0)
-        payout = float(payout or 0.0)
-        net = round(payout - wager, 2)
-        player_map[uid]["wagered"] = round(player_map[uid]["wagered"] + wager, 2)
-        player_map[uid]["net"] = round(player_map[uid]["net"] + net, 2)
-        player_map[uid]["breakdown"][vertical] = round(player_map[uid]["breakdown"][vertical] + net, 2)
-
-    q = db.query(DiceBet).filter(DiceBet.created_at >= start, DiceBet.created_at < end)
-    if scoped_ids:
-        q = q.filter(DiceBet.user_id.in_(scoped_ids))
-    for r in q.all():
-        _accumulate_player(r.user_id, r.amount_usd, r.payout, "originals")
-
-    q = db.query(CrashBet).filter(CrashBet.created_at >= start, CrashBet.created_at < end)
-    if scoped_ids:
-        q = q.filter(CrashBet.user_id.in_(scoped_ids))
-    for r in q.all():
-        _accumulate_player(r.user_id, r.amount_usd, r.payout, "originals")
-
-    q = db.query(GlobalCrashBet).filter(GlobalCrashBet.created_at >= start, GlobalCrashBet.created_at < end)
-    if scoped_ids:
-        q = q.filter(GlobalCrashBet.user_id.in_(scoped_ids))
-    for r in q.all():
-        _accumulate_player(r.user_id, r.amount_usd, r.payout, "originals")
-
-    players_perf = list(player_map.values())
-    players_perf.sort(key=lambda x: x["net"], reverse=True)
-    top_winners = [x for x in players_perf if x["net"] > 0][:5]
-    top_losers = sorted([x for x in players_perf if x["net"] < 0], key=lambda x: x["net"])[:5]
-
-    return {
-        "range": range_key,
-        "deposits": {
-            "total": deposits,
-            "count": deposit_count
-        },
-        "withdrawals": {
-            "completed": completed
-        },
-        "risk": {
-            "open_withdrawals": round(requested+approved+sent,2)
-        },
-        "cashflow": {
-            "net": round(deposits - completed,2)
-        },
-        "ggr": {
-            "total_platform_ggr": originals_total,
-            "originals_total": originals_total,
-            "sportsbook_total": 0.0,
-            "vendor_casino_total": 0.0,
-            "originals_breakdown": breakdown
-        },
-        "player_performance": {"top_winners": top_winners, "top_losers": top_losers},
-            "players": {
-            "active": len(active)
-        }
-    }
-
-
-@app.get("/admin/dashboard/summary-range")
-def admin_dashboard_summary_range(
-    range: str = "today",
-    viewer_id: str | None = None,
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")
-):
-    _require_admin(x_admin_key)
-    db = SessionLocal()
-    try:
-        scoped_ids = _scoped_user_ids(db, viewer_id) if viewer_id else None
-        return _dashboard_summary_range(db, scoped_ids, viewer_id, range)
-    finally:
-        db.close()
-
-
-@app.get("/agent/dashboard/summary-range")
-def agent_dashboard_summary_range(
-    viewer_id: str,
-    range: str = "today",
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")
-):
-    _require_admin(x_admin_key)
-    db = SessionLocal()
-    try:
-        ids = _scoped_user_ids(db, viewer_id)
-        return _dashboard_summary_range(db, ids, viewer_id, range)
-    finally:
-        db.close()
-
-
-from pydantic import BaseModel, EmailStr
-from app.auth_routes import hash_password
-import uuid
-
-class AdminCreateUserBody(BaseModel):
-    viewer_id: str
-    parent_id: str
-    role: str
-    email: EmailStr
-    username: str
-    password: str
-    agent_code: str | None = None
-    is_active: bool = True
-
-@app.post("/admin/users/create")
-def admin_create_user(body: AdminCreateUserBody, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
-    _require_admin(x_admin_key)
-
-    db = SessionLocal()
-    try:
-        viewer = _get_user_hierarchy_row(db, body.viewer_id)
-        if not viewer:
-            raise HTTPException(status_code=404, detail="Viewer not found")
-
-        viewer_role = _normalize_role(viewer.get("role"))
-        role = _normalize_role(body.role)
-
-        if not _can_create_child_role(viewer_role, role):
-            raise HTTPException(status_code=403, detail="Role creation not allowed")
-
-        parent = _get_user_hierarchy_row(db, body.parent_id)
-        if not parent:
-            raise HTTPException(status_code=404, detail="Parent not found")
-
-        if not _is_descendant_or_self(db, body.viewer_id, body.parent_id):
-            raise HTTPException(status_code=403, detail="Parent outside your hierarchy")
-
-        user_id = body.username.strip()
-
-        existing_auth = db.execute(sa_text("""
-            SELECT 1 FROM c2w_users WHERE user_id = :uid
-        """), {"uid": user_id}).fetchone()
-
-        existing_user = db.execute(sa_text("""
-            SELECT 1 FROM users WHERE id = :uid
-        """), {"uid": user_id}).fetchone()
-
-        if existing_auth or existing_user:
-            raise HTTPException(status_code=400, detail="User already exists")
-
-        password_hash = hash_password(body.password)
-
-        db.execute(sa_text("""
-            INSERT INTO c2w_users (user_id, email, username, password_hash, is_active)
-            VALUES (:user_id, :email, :username, :password_hash, :is_active)
-        """), {
-            "user_id": user_id,
-            "email": body.email.lower(),
-            "username": body.username,
-            "password_hash": password_hash,
-            "is_active": body.is_active,
-        })
-
-        db.execute(sa_text("""
-            INSERT INTO users (
-                id, role, parent_id, created_by, agent_code,
-                is_active, billing_type,
-                pph_rate, ggr_share,
-                service_pph, service_ggr,
-                originals_ggr, casino_ggr, live_betting_ggr
-            )
-            VALUES (
-                :id, :role, :parent_id, :created_by, :agent_code,
-                :is_active, 'ggr',
-                0, 0,
-                0, 0,
-                0, 0, 0
-            )
-        """), {
-            "id": user_id,
-            "role": role,
-            "parent_id": body.parent_id,
-            "created_by": body.viewer_id,
-            "agent_code": body.agent_code,
-            "is_active": body.is_active,
-        })
-
-        if role == "player":
-            db.execute(sa_text("""
-                INSERT INTO wallets (user_id, balance_total, balance_pending, balance_available)
-                VALUES (:user_id, 0, 0, 0)
-            """), {"user_id": user_id})
-
-        db.commit()
-
-        return {
-            "ok": True,
-            "user_id": user_id,
-            "role": role
-        }
-
-    finally:
-        db.close()
-
-
-class AdminUpdateUserMetadataBody(BaseModel):
-    parent_id: str | None = None
-    agent_code: str | None = None
-    created_by: str | None = None
-    updated_by: str | None = None
-
-
-@app.post("/admin/users/{user_id}/disable")
-def admin_disable_user(
-    user_id: str,
-    request: Request,
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
-):
-    _require_admin(x_admin_key)
-
-    db = SessionLocal()
-    try:
-        body = {}
-        try:
-            body = {}
-        except Exception:
-            body = {}
-
-        actor_id = "system"
-
-        row = _get_user_hierarchy_row(db, user_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        db.execute(sa_text("""
-            UPDATE users
-            SET is_active = FALSE,
-                updated_at = NOW(),
-                updated_by = :updated_by
-            WHERE id = :user_id
-        """), {
-            "user_id": user_id,
-            "updated_by": actor_id,
-        })
-
-        db.execute(sa_text("""
-            UPDATE c2w_users
-            SET is_active = FALSE
-            WHERE user_id = :user_id
-        """), {
-            "user_id": user_id,
-        })
-
-        db.commit()
-        return {"ok": True, "user_id": user_id, "is_active": False}
-    finally:
-        db.close()
-
-
-@app.post("/admin/users/{user_id}/enable")
-def admin_enable_user(
-    user_id: str,
-    request: Request,
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
-):
-    _require_admin(x_admin_key)
-
-    db = SessionLocal()
-    try:
-        actor_id = "system"
-
-        row = _get_user_hierarchy_row(db, user_id)
-        if not row:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        db.execute(sa_text("""
-            UPDATE users
-            SET is_active = TRUE,
-                updated_at = NOW(),
-                updated_by = :updated_by
-            WHERE id = :user_id
-        """), {
-            "user_id": user_id,
-            "updated_by": actor_id,
-        })
-
-        db.execute(sa_text("""
-            UPDATE c2w_users
-            SET is_active = TRUE
-            WHERE user_id = :user_id
-        """), {
-            "user_id": user_id,
-        })
-
-        db.commit()
-        return {"ok": True, "user_id": user_id, "is_active": True}
-    finally:
-        db.close()
-
-
-@app.post("/admin/users/{user_id}/update-metadata")
-def admin_update_user_metadata(
-    user_id: str,
-    body: AdminUpdateUserMetadataBody,
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
-):
-    _require_admin(x_admin_key)
-
-    db = SessionLocal()
-    try:
-        _get_or_create_user_and_wallet(db, user_id)
-        target = _get_user_hierarchy_row(db, user_id)
-        if not target:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        actor_id = str(body.updated_by or "").strip() or "system"
-        actor = _get_user_hierarchy_row(db, actor_id)
-        if not actor:
-            raise HTTPException(status_code=404, detail="Updated_by user not found")
-
-        _enforce_hierarchy_scope(db, actor_id, user_id)
-
-        updates = []
-        params = {
-            "user_id": user_id,
-            "updated_by": actor_id,
-        }
-
-        if body.parent_id is not None:
-            new_parent = str(body.parent_id).strip() or None
-            if new_parent:
-                parent = _get_user_hierarchy_row(db, new_parent)
-                if not parent:
-                    raise HTTPException(status_code=404, detail="Parent not found")
-                _enforce_hierarchy_scope(db, actor_id, new_parent)
-            updates += [
-                "parent_id = :parent_id",
-                "last_parent_change_at = NOW()",
-                "last_parent_change_by = :updated_by",
-            ]
-            params["parent_id"] = new_parent
-
-        if body.agent_code is not None:
-            new_agent_code = str(body.agent_code).strip() or None
-            updates += [
-                "agent_code = :agent_code",
-                "last_agent_code_change_at = NOW()",
-                "last_agent_code_change_by = :updated_by",
-            ]
-            params["agent_code"] = new_agent_code
-
-        if body.created_by is not None:
-            new_created_by = str(body.created_by).strip() or None
-            if new_created_by:
-                creator = _get_user_hierarchy_row(db, new_created_by)
-                if not creator:
-                    raise HTTPException(status_code=404, detail="Created_by user not found")
-            updates += [
-                "created_by = :created_by",
-                "last_created_by_change_at = NOW()",
-                "last_created_by_change_by = :updated_by",
-            ]
-            params["created_by"] = new_created_by
-
-        if not updates:
-            raise HTTPException(status_code=400, detail="No metadata fields provided")
-
-        updates += [
-            "updated_at = NOW()",
-            "updated_by = :updated_by",
-        ]
-
-        sql = f"""
-            UPDATE users
-            SET {", ".join(updates)}
-            WHERE id = :user_id
-        """
-
-        db.execute(sa_text(sql), params)
-        db.commit()
-
-        return {"ok": True, "user_id": user_id}
-    finally:
-        db.close()
-
-
-@app.post("/admin/users/{user_id}/update-contact")
-async def admin_update_user_contact(
-    user_id: str,
-    request: Request,
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
-):
-    _require_admin(x_admin_key)
-
-    db = SessionLocal()
-    try:
-        _get_or_create_user_and_wallet(db, user_id)
-        target = _get_user_hierarchy_row(db, user_id)
-        if not target:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        body = await request.json()
-        full_name = str(body.get("full_name", "") or "").strip() or None
-        telegram = str(body.get("telegram", "") or "").strip() or None
-        phone = str(body.get("phone", "") or "").strip() or None
-        notes = str(body.get("notes", "") or "").strip() or None
-        actor_id = str(body.get("updated_by", "") or "").strip() or "admin"
-
-        db.execute(sa_text("""
-            INSERT INTO c2w_users (
-                user_id,
-                email,
-                username,
-                password_hash,
-                is_active,
-                created_at,
-                full_name,
-                telegram,
-                phone,
-                notes
-            )
-            SELECT
-                u.id,
-                COALESCE(cu.email, u.email, CASE WHEN POSITION('@' IN u.id) > 0 THEN u.id ELSE NULL END),
-                COALESCE(cu.username, NULLIF(split_part(u.id, '@', 1), ''), u.id),
-                COALESCE(cu.password_hash, u.password_hash, ''),
-                COALESCE(cu.is_active, u.is_active, TRUE),
-                COALESCE(cu.created_at, NOW()),
-                :full_name,
-                :telegram,
-                :phone,
-                :notes
-            FROM users u
-            LEFT JOIN c2w_users cu ON cu.user_id = u.id
-            WHERE u.id = :user_id
-            ON CONFLICT (user_id) DO UPDATE SET
-                full_name = EXCLUDED.full_name,
-                telegram = EXCLUDED.telegram,
-                phone = EXCLUDED.phone,
-                notes = EXCLUDED.notes
-        """), {
-            "user_id": user_id,
-            "full_name": full_name,
-            "telegram": telegram,
-            "phone": phone,
-            "notes": notes,
-        })
-
-        db.execute(sa_text("""
-            UPDATE users
-            SET updated_at = NOW(),
-                updated_by = :updated_by
-            WHERE id = :user_id
-        """), {
-            "user_id": user_id,
-            "updated_by": actor_id,
-        })
-
-        db.commit()
-
-        return {
-            "ok": True,
-            "user_id": user_id,
-            "full_name": full_name,
-            "telegram": telegram,
-            "phone": phone,
-            "notes": notes,
-        }
-    finally:
-        db.close()
-
-
-from pydantic import BaseModel
-
-class BillingEdgeUpdate(BaseModel):
-    parent_id: str
-    child_id: str
-    billing_type: str | None = None
-    billing_cycle: str | None = None
-    pph_rate: float | None = None
-    ggr_share: float | None = None
-    sportsbook_enabled: bool | None = None
-    casino_enabled: bool | None = None
-    crash_enabled: bool | None = None
-
-@app.post("/admin/billing/edge/update")
-def update_billing_edge(payload: BillingEdgeUpdate, x_admin_key: str = Header(...)):
-    _require_admin(x_admin_key)
-    db = SessionLocal()
-    try:
-        edge = db.execute(text("""
-            SELECT * FROM billing_edges
-            WHERE parent_id = :parent_id
-              AND child_id = :child_id
-              AND is_active = TRUE
-            ORDER BY id DESC
-            LIMIT 1
-        """), payload.dict()).mappings().first()
-
-        if not edge:
-            return {"ok": False, "error": "Active edge not found"}
-
-        update_fields = {k:v for k,v in payload.dict().items() if v is not None and k not in ["parent_id","child_id"]}
-
-        if not update_fields:
-            return {"ok": False, "error": "No fields to update"}
-
-        set_clause = ", ".join([f"{k} = :{k}" for k in update_fields.keys()])
-
-        db.execute(text(f"""
-            UPDATE billing_edges
-            SET {set_clause}, updated_at = NOW()
-            WHERE id = :id
-        """), {**update_fields, "id": edge["id"]})
-
-        db.commit()
-        return {"ok": True}
-    finally:
-        db.close()
-
-@app.post("/admin/users/{user_id}/wallet-adjust")
-async def admin_wallet_adjust(
-    user_id: str,
-    request: Request,
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
-):
-    _require_admin(x_admin_key)
-
-    db = SessionLocal()
-    try:
-        _get_or_create_user_and_wallet(db, user_id)
-
-        body = await request.json()
-
-        amount = float(body.get("amount", 0) or 0)
-        reason = str(body.get("reason", "") or "").strip()
-        action = str(body.get("action", "") or "").strip().lower()
-        actor_id = str(body.get("actor_id", "") or "").strip() or "admin"
-
-        if amount <= 0:
-            raise HTTPException(status_code=400, detail="amount must be > 0")
-
-        if action not in ("credit", "debit"):
-            action = "credit"
-
-        wallet = (
-            db.query(Wallet)
-            .filter(Wallet.user_id == user_id)
-            .with_for_update()
-            .one()
-        )
-
-        if action == "credit":
-            wallet.balance_total = _round2(wallet.balance_total + amount)
-            wallet.balance_available = _round2(wallet.balance_available + amount)
-            tx_amount = float(amount)
-            tx_type = "manual_credit"
-        else:
-            if float(wallet.balance_available) < amount:
-                raise HTTPException(status_code=400, detail="insufficient available balance")
-
-            wallet.balance_total = _round2(wallet.balance_total - amount)
-            wallet.balance_available = _round2(wallet.balance_available - amount)
-            tx_amount = -float(amount)
-            tx_type = "manual_debit"
-
-        tx = Transaction(
-            user_id=user_id,
-            type=tx_type,
-            amount=tx_amount,
-            balance_after=float(wallet.balance_total),
-            reference=f"{reason}:{actor_id}" if reason else f"manual:{actor_id}",
-        )
-        db.add(tx)
-
-        db.commit()
-
-        return {
-            "ok": True,
-            "user_id": user_id,
-            "action": action,
-            "amount": amount,
-            "balance_total": wallet.balance_total,
-            "balance_available": wallet.balance_available,
-        }
-
-    except HTTPException:
-        db.rollback()
-        raise
-    finally:
-        db.close()
-
-
-@app.post("/admin/users/{user_id}/reset-password")
-async def admin_reset_user_password(
-    user_id: str,
-    request: Request,
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
-):
-    _require_admin(x_admin_key)
-
-    db = SessionLocal()
-    try:
-        _get_or_create_user_and_wallet(db, user_id)
-
-        body = await request.json()
-        new_password = str(body.get("new_password", "") or "").strip()
-
-        if len(new_password) < 6:
-            raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-
-        password_hash = hash_password(new_password)
-
-        row = db.execute(sa_text("""
-            SELECT 1 FROM c2w_users WHERE user_id = :user_id
-        """), {"user_id": user_id}).fetchone()
-
-        if row:
-            db.execute(sa_text("""
-                UPDATE c2w_users
-                SET password_hash = :password_hash
-                WHERE user_id = :user_id
-            """), {
-                "user_id": user_id,
-                "password_hash": password_hash,
-            })
-        else:
-            db.execute(sa_text("""
-                INSERT INTO c2w_users (user_id, email, username, password_hash, is_active)
-                VALUES (
-                    :user_id,
-                    CASE WHEN POSITION('@' IN :user_id) > 0 THEN :user_id ELSE NULL END,
-                    NULLIF(split_part(:user_id, '@', 1), ''),
-                    :password_hash,
-                    TRUE
-                )
-            """), {
-                "user_id": user_id,
-                "password_hash": password_hash,
-            })
-
-        db.execute(sa_text("""
-            UPDATE users
-            SET updated_at = NOW(),
-                updated_by = 'admin'
-            WHERE id = :user_id
-        """), {"user_id": user_id})
-
-        db.commit()
-
-        return {
-            "ok": True,
-            "user_id": user_id,
-            "message": "Password reset successfully",
-        }
-    except HTTPException:
-        db.rollback()
-        raise
     finally:
         db.close()
 

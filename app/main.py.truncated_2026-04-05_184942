@@ -1,0 +1,377 @@
+from app.billing_runner import run_global_billing
+from app.agent_password import router as agent_password_router
+from app.agent_password import router as agent_password_router
+from collections import defaultdict
+import time
+RATE_LIMIT = defaultdict(list)
+def check_rate_limit(ip: str, limit=5, window=60):
+    now = time.time()
+    requests = RATE_LIMIT[ip]
+    RATE_LIMIT[ip] = [r for r in requests if now - r < window]
+    if len(RATE_LIMIT[ip]) >= limit:
+        return False
+    RATE_LIMIT[ip].append(now)
+    return True
+
+from app.agent_change_password import router as agent_change_password_router
+from app.agent_change_password import router as agent_change_password_router
+from app.agent_auth import router as agent_auth_router
+import uuid
+from pydantic import BaseModel
+
+class ForgotPasswordBody(BaseModel):
+    email: str
+
+class ResetPasswordBody(BaseModel):
+    token: str
+    new_password: str
+
+import os
+import hmac
+import hashlib
+import json
+import time
+import requests
+import random
+import time
+
+from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from dotenv import load_dotenv
+from pydantic import BaseModel
+
+load_dotenv("/var/www/coin2win/.env")
+
+from app.auth_routes import auth_router, init_auth_tables, get_bearer_token, decode_token, hash_password
+from sqlalchemy import (
+    text,
+    create_engine,
+    Column,
+    Integer,
+    String,
+    Float,
+    Text,
+    DateTime,
+    func,
+    ForeignKey,
+)
+from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.exc import IntegrityError
+
+import os
+AUTO_WITHDRAW_ENABLED = os.getenv("AUTO_WITHDRAW_ENABLED", "true") == "true"
+AUTO_WITHDRAW_THRESHOLD = float(os.getenv("AUTO_WITHDRAW_THRESHOLD", "200"))
+
+app = FastAPI()
+app.include_router(agent_password_router)
+app.mount("/uploads", StaticFiles(directory="/var/www/coin2win/uploads"), name="uploads")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://159.203.121.161:3000",
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+from collections import deque
+import threading
+from datetime import datetime, timedelta, timezone
+
+LIVE_CASINO_FEED = deque(maxlen=50)
+LIVE_CASINO_FEED_LOCK = threading.Lock()
+
+def _mask_user_id(user_id: str) -> str:
+    s = str(user_id or "").strip()
+    if len(s) <= 2:
+        return s
+    if len(s) <= 6:
+        return s[:2] + "***"
+    return s[:2] + "***" + s[-2:]
+
+FAKE_FEED_ENABLED = True
+def _push_live_feed_event(
+    game: str,
+    user_id: str,
+    amount_usd: float,
+    payout: float,
+    multiplier: float | None = None,
+    source: str = "real",
+    provider: str = "coin2win",
+):
+    masked_user = _mask_user_id(user_id)
+    game_key = str(game or "").lower()
+    game_name = game_key.title() if game_key else "Game"
+    stake = round(float(amount_usd), 2)
+    payout_rounded = round(float(payout), 2)
+    profit = round(payout_rounded - stake, 2)
+    occurred_at = datetime.now(timezone.utc).isoformat()
+
+    if multiplier is not None:
+        multiplier_rounded = round(float(multiplier), 2)
+        message = f"{masked_user} won ${payout_rounded:.2f} on {game_name} at {multiplier_rounded:.2f}x"
+    else:
+        multiplier_rounded = None
+        message = f"{masked_user} won ${payout_rounded:.2f} on {game_name}"
+
+    event = {
+        "id": f"{game_key}:{user_id}:{datetime.now(timezone.utc).timestamp()}",
+        "event_type": "win",
+        "game_key": game_key,
+        "game_name": game_name,
+        "user_id": str(user_id),
+        "display_user": masked_user,
+        "stake": stake,
+        "payout": payout_rounded,
+        "profit": profit,
+        "multiplier": multiplier_rounded,
+        "provider": str(provider or "coin2win"),
+        "source": str(source or "real"),
+        "occurred_at": occurred_at,
+        "message": message,
+        "is_big_win": payout_rounded >= 100,
+        "game": game_key,
+        "user": masked_user,
+        "amount_usd": stake,
+        "created_at": occurred_at,
+    }
+    with LIVE_CASINO_FEED_LOCK:
+        LIVE_CASINO_FEED.appendleft(event)
+
+def _generate_fake_live_feed_event():
+    games = ["crash", "dice"]
+    game = random.choice(games)
+
+    fake_users = [
+        "player7841",
+        "alex992",
+        "mario17",
+        "betking44",
+        "lucky928",
+        "cryptofox",
+        "spinpro",
+        "cashout77",
+    ]
+
+    user_id = random.choice(fake_users)
+    amount_usd = round(random.uniform(1.0, 20.0), 2)
+
+    if game == "crash":
+        multiplier = round(random.uniform(1.40, 8.50), 2)
+        payout = round(amount_usd * multiplier, 2)
+    else:
+        multiplier = round(random.uniform(1.20, 4.50), 2)
+        payout = round(amount_usd * multiplier, 2)
+
+    _push_live_feed_event(
+        game=game,
+        user_id=user_id,
+        amount_usd=amount_usd,
+        payout=payout,
+        multiplier=multiplier,
+        source="fake",
+    )
+
+# --------------------------
+# Config
+# --------------------------
+NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
+NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET")
+IPN_CALLBACK_URL = os.getenv("NOWPAYMENTS_IPN_CALLBACK_URL")
+
+MIN_DEPOSIT_USD = float(os.getenv("MIN_DEPOSIT_USD", "20"))
+MIN_WITHDRAW_USD = float(os.getenv("MIN_WITHDRAW_USD", "20"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+ADMIN_KEY = os.getenv("ADMIN_KEY", "").strip()
+
+if not NOWPAYMENTS_API_KEY:
+    raise RuntimeError("Missing NOWPAYMENTS_API_KEY in .env")
+if not NOWPAYMENTS_IPN_SECRET:
+    raise RuntimeError("Missing NOWPAYMENTS_IPN_SECRET in .env")
+if not IPN_CALLBACK_URL:
+    raise RuntimeError("Missing NOWPAYMENTS_IPN_CALLBACK_URL in .env")
+if not DATABASE_URL:
+    raise RuntimeError("Missing DATABASE_URL in .env")
+
+ACTIVE_WITHDRAW_STATUSES = ("requested", "approved", "sent")
+
+# --------------------------
+# Database
+# --------------------------
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(String(64), primary_key=True)
+    kyc_status = Column(String(20), nullable=False, default="unverified", server_default="unverified")
+    kyc_level = Column(Integer, nullable=False, default=0, server_default="0")
+    auto_withdraw_enabled = Column(Integer, nullable=False, default=1, server_default="1")
+    auto_withdraw_limit = Column(Float, nullable=False, default=0, server_default="0")
+    kyc_doc_front_path = Column(Text, nullable=True)
+    kyc_selfie_path = Column(Text, nullable=True)
+    kyc_poa_path = Column(Text, nullable=True)
+    kyc_verified_at = Column(DateTime(timezone=True), nullable=True)
+    kyc_rejected_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class Wallet(Base):
+    __tablename__ = "wallets"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), ForeignKey("users.id"), unique=True, nullable=False)
+
+    # New model:
+    balance_total = Column(Float, default=0)
+    balance_pending = Column(Float, default=0)
+    balance_available = Column(Float, default=0)
+
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Deposit(Base):
+    __tablename__ = "deposits"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+
+    payment_id = Column(String(64), unique=True, nullable=False)
+    status = Column(String(32), default="waiting")
+
+    amount_usd = Column(Float, nullable=False)
+    pay_currency = Column(String(32), nullable=False)
+
+    pay_amount = Column(Float, nullable=True)
+    pay_address = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Withdrawal(Base):
+    __tablename__ = "withdrawals"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+
+    amount_usd = Column(Float, nullable=False)
+    payout_currency = Column(String(32), nullable=False)
+    payout_address = Column(Text, nullable=False)
+
+    # requested -> approved -> sent -> completed
+    # rejected (refunds)
+    status = Column(String(32), default="requested")
+    refunded = Column(Integer, default=0)  # 0/1
+    note = Column(Text, nullable=True)
+    batch_withdrawal_id = Column(String(128), nullable=True)
+    payout_status = Column(String(64), nullable=True)
+    payout_response_json = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+
+    # deposit, withdrawal_request, withdrawal_refund, withdrawal_complete, etc
+    type = Column(String(64), nullable=False)
+
+    # + credit, - debit
+    amount = Column(Float, nullable=False)
+
+    # Store wallet TOTAL after the transaction (or total at time of event)
+    balance_after = Column(Float, nullable=False)
+
+    reference = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+@app.on_event("startup")
+def startup():
+    init_auth_tables()
+    
+
+# ==========================
+# GLOBAL CRASH V2 (24/7 shared rounds)
+# ==========================
+
+GLOBAL_CRASH_ENGINE_USER = "__global_crash_engine__"
+GLOBAL_CRASH_BETTING_SECONDS = int(os.getenv("GLOBAL_CRASH_BETTING_SECONDS", "5"))
+GLOBAL_CRASH_COOLDOWN_SECONDS = int(os.getenv("GLOBAL_CRASH_COOLDOWN_SECONDS", "2"))
+GLOBAL_CRASH_TICK_SECONDS = float(os.getenv("GLOBAL_CRASH_TICK_SECONDS", "0.25"))
+
+GLOBAL_CRASH_ENGINE_STARTED = False
+def crash_global_round_bets(round_id: int):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(GlobalCrashBet)
+            .filter(GlobalCrashBet.round_id == round_id)
+            .order_by(GlobalCrashBet.id.asc())
+            .all()
+        )
+
+        def mask(uid: str):
+            raw = str(uid or "player")
+            if len(raw) <= 4:
+                return raw[0] + "***" if raw else "p***"
+            return raw[:1] + "***" + raw[-3:]
+
+        return {
+            "round_id": round_id,
+            "count": len(rows),
+            "bets": [
+                {
+                    "bet_id": r.id,
+                    "player": mask(r.user_id),
+                    "amount": float(r.amount_usd),
+                    "auto_cashout": float(r.auto_cashout) if r.auto_cashout is not None else None,
+                    "status": str(r.status),
+                    "payout": float(r.payout),
+                    "cashout_multiplier": float(r.cashout_multiplier) if r.cashout_multiplier is not None else None,
+                    "is_real": True,
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        db.close()
+
+@app.get("/studio/live-wins")
+def studio_live_wins(limit: int = 20):
+    safe_limit = max(1, min(int(limit), 50))
+    with LIVE_CASINO_FEED_LOCK:
+        items = list(LIVE_CASINO_FEED)[:safe_limit]
+    return {
+        "ok": True,
+        "items": items,
+    }
+
+@app.post("/studio/live-wins/seed")
+
+def studio_live_wins_seed():
+    if not FAKE_FEED_ENABLED:
+        return {"ok": True, "seeded": False, "reason": "disabled"}
+
+    with LIVE_CASINO_FEED_LOCK:
+        latest = LIVE_CASINO_FEED[0] if LIVE_CASINO_FEED else None
+
+    should_seed = True
+
+    if latest and latest.get("created_at"):
+        try:
+            latest_dt = datetime.fromisoformat(latest["created_at"])
+            age_seconds = (datetime.now(timezone.utc) - latest_dt).total_seconds()
+            should_seed = age_seconds >= 12
+        except Exception:
+            should_seed = True
+
+    if should_seed:
+        _generate_fake_live_feed_event()
+        return {"ok": True, "seeded": True}
+
+    return {"ok": True, "seeded": False, "reason": "feed_recently_active"}
+
+@app.get("/studio/crash-global/round-bets/{round_id}")

@@ -1,3 +1,5 @@
+from app.rate_limit import check_rate_limit
+from fastapi import Request
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -117,7 +119,7 @@ def resolve_signup_owner(db, referral_code: str | None, registered_host: str | N
     row = db.execute(text("""
         SELECT id
         FROM users
-        WHERE role = 'super_admin'
+        WHERE role IN ('super_admin', 'superadmin')
         ORDER BY created_at ASC NULLS LAST, id ASC
         LIMIT 1
     """)).mappings().first()
@@ -153,13 +155,13 @@ def login_host_allows_user(db, user_id: str, registered_host: str | None):
     row = db.execute(text("""
         WITH RECURSIVE user_tree AS (
             SELECT id, parent_id
-            FROM users
+            FROM c2w_users
             WHERE id = :owner_user_id
 
             UNION ALL
 
             SELECT u.id, u.parent_id
-            FROM users u
+            FROM c2w_users u
             INNER JOIN user_tree ut ON u.parent_id = ut.id
         )
         SELECT id
@@ -177,7 +179,7 @@ def login_host_allows_user(db, user_id: str, registered_host: str | None):
 def ensure_player_bridge_records(db, user_id: str) -> None:
     owner_row = db.execute(text("""
         SELECT id
-        FROM users
+        FROM c2w_users
         WHERE role = 'super_admin'
         ORDER BY created_at ASC NULLS LAST, id ASC
         LIMIT 1
@@ -187,7 +189,7 @@ def ensure_player_bridge_records(db, user_id: str) -> None:
 
     existing_user = db.execute(text("""
         SELECT id
-        FROM users
+        FROM c2w_users
         WHERE id = :user_id
         LIMIT 1
     """), {"user_id": user_id}).fetchone()
@@ -328,7 +330,9 @@ def register(body: RegisterBody):
 
 
 @auth_router.post("/login")
-def login(body: LoginBody):
+def login(body: LoginBody, request: Request):
+    ip = request.client.host
+    if not check_rate_limit(ip): raise HTTPException(status_code=429, detail="Too many requests")
     email = body.email.strip().lower()
     registered_host = (body.registered_host or "").strip().lower() or None
 
@@ -412,3 +416,47 @@ def me(authorization: Optional[str] = Header(default=None)):
             "created_at": str(row["created_at"]),
         },
     }
+
+class ChangePasswordBody(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@auth_router.post("/change-password")
+def change_password(body: ChangePasswordBody, authorization: str | None = Header(default=None)):
+    token = get_bearer_token(authorization)
+    payload = decode_token(token)
+    user_id = payload.get("sub")
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    if len(body.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    with SessionLocal.begin() as db:
+        row = db.execute(text("""
+            SELECT password_hash
+            FROM c2w_users
+            WHERE user_id = :user_id
+            LIMIT 1
+        """), {"user_id": user_id}).mappings().first()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        if not verify_password(body.current_password, row["password_hash"]):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+        new_hash = hash_password(body.new_password)
+
+        db.execute(text("""
+            UPDATE c2w_users
+            SET password_hash = :password_hash
+            WHERE user_id = :user_id
+        """), {
+            "password_hash": new_hash,
+            "user_id": user_id
+        })
+
+    return {"ok": True, "message": "Password updated successfully"}
