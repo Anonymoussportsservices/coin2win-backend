@@ -1,4 +1,3 @@
-from app.agent_auth import router as agent_auth_router
 import os
 import hmac
 import hashlib
@@ -6,12 +5,13 @@ import json
 import time
 import requests
 import random
-import time
 
 from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
+
+from app.agent_auth import router as agent_auth_router
 
 load_dotenv("/var/www/coin2win/.env")
 
@@ -31,6 +31,24 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.exc import IntegrityError
+
+
+def _guard_user_rate_limit(user, seconds: float = 0.5):
+    import time
+    now = time.time()
+    last = getattr(user, "last_bet_ts", 0)
+    if now - last < seconds:
+        raise HTTPException(status_code=429, detail="Too fast")
+    user.last_bet_ts = now
+
+
+def _guard_user_lock(user):
+    if getattr(user, "bet_lock", False):
+        raise HTTPException(status_code=429, detail="Bet in progress")
+    user.bet_lock = True
+
+def _release_user_lock(user):
+    user.bet_lock = False
 
 app = FastAPI()
 app.include_router(agent_auth_router)
@@ -154,6 +172,44 @@ MIN_WITHDRAW_USD = float(os.getenv("MIN_WITHDRAW_USD", "20"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 ADMIN_KEY = os.getenv("ADMIN_KEY", "").strip()
+
+# --------------------------
+# SoftSwiss Config / Helpers
+# --------------------------
+SOFTSWISS_ENABLED = os.getenv("SOFTSWISS_ENABLED", "false").lower() == "true"
+SOFTSWISS_BASE_URL = os.getenv("SOFTSWISS_BASE_URL", "").strip().rstrip("/")
+SOFTSWISS_CASINO_ID = os.getenv("SOFTSWISS_CASINO_ID", "").strip()
+SOFTSWISS_AUTH_TOKEN = os.getenv("SOFTSWISS_AUTH_TOKEN", "").strip()
+SOFTSWISS_DEFAULT_CURRENCY = os.getenv("SOFTSWISS_DEFAULT_CURRENCY", "USD").strip()
+SOFTSWISS_DEFAULT_LOCALE = os.getenv("SOFTSWISS_DEFAULT_LOCALE", "en").strip()
+SOFTSWISS_DEFAULT_JURISDICTION = os.getenv("SOFTSWISS_DEFAULT_JURISDICTION", "CR").strip()
+SOFTSWISS_RETURN_URL = os.getenv("SOFTSWISS_RETURN_URL", "https://coin2win.bet/casino").strip()
+SOFTSWISS_DEPOSIT_URL = os.getenv("SOFTSWISS_DEPOSIT_URL", "https://coin2win.bet/cashier").strip()
+
+def _softswiss_compact_json(payload: dict) -> bytes:
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+def _softswiss_sign_body(raw_body: bytes) -> str:
+    if not SOFTSWISS_AUTH_TOKEN:
+        raise HTTPException(status_code=500, detail="SoftSwiss auth token missing")
+    return hmac.new(
+        SOFTSWISS_AUTH_TOKEN.encode("utf-8"),
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+
+def _softswiss_verify_signature(raw_body: bytes, signature: str | None):
+    expected = _softswiss_sign_body(raw_body)
+    provided = str(signature or "").strip()
+    if not provided or not hmac.compare_digest(expected, provided):
+        raise HTTPException(status_code=400, detail="Invalid SoftSwiss signature")
+
+def _softswiss_money(value) -> float:
+    try:
+        return _round2(float(value or 0))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid amount")
+
 
 if not NOWPAYMENTS_API_KEY:
     raise RuntimeError("Missing NOWPAYMENTS_API_KEY in .env")
@@ -304,6 +360,917 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 def startup():
     pass
     
+
+
+
+# ==========================
+# STUDIO: COINFLIP
+# ==========================
+
+class CoinflipBet(Base):
+    __tablename__ = "coinflip_bets"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+    amount_usd = Column(Float, nullable=False)
+    choice = Column(String(8), nullable=False)
+    result = Column(String(8), nullable=False)
+    win = Column(Boolean, nullable=False, default=False)
+    payout = Column(Float, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class HiloBet(Base):
+    __tablename__ = "hilo_bets"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+    amount_usd = Column(Float, nullable=False)
+    start_card = Column(Integer, nullable=False)
+    current_card = Column(Integer, nullable=False)
+    result_card = Column(Integer, nullable=True)
+    choice = Column(String(8), nullable=True)
+    streak = Column(Integer, nullable=False, default=0)
+    multiplier = Column(Float, nullable=False, default=1.0)
+    status = Column(String(32), nullable=False, default="active")  # active, lost, cashed_out
+    payout = Column(Float, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+@app.post("/studio/coinflip/bet")
+async def coinflip_bet(request: Request):
+    body = await request.json()
+    user_id = str(body.get("user_id","")).strip()
+    amount = float(body.get("amount_usd",0))
+    choice = str(body.get("choice","")).lower().strip()
+
+    if not user_id: raise HTTPException(status_code=400, detail="user_id required")
+    if amount <= 0: raise HTTPException(status_code=400, detail="amount_usd must be > 0")
+    if choice not in ("heads","tails"): raise HTTPException(status_code=400, detail="choice must be heads or tails")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+        w = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
+
+        if float(w.balance_available) < amount:
+            raise HTTPException(status_code=400, detail="Insufficient balance")
+
+        w.balance_total = _round2(w.balance_total - amount)
+        w.balance_available = _round2(w.balance_available - amount)
+
+        tx1 = Transaction(user_id=user_id,type="coinflip_bet",amount=-float(amount),balance_after=float(w.balance_total),reference=None)
+        db.add(tx1)
+
+        import random
+        result = "heads" if random.random() < 0.5 else "tails"
+        win = result == choice
+
+        payout = 0.0
+        if win:
+            payout = _round2(amount * 1.98)
+            w.balance_total = _round2(w.balance_total + payout)
+            w.balance_available = _round2(w.balance_available + payout)
+            tx2 = Transaction(user_id=user_id,type="coinflip_payout",amount=float(payout),balance_after=float(w.balance_total),reference=None)
+            db.add(tx2)
+
+        bet = CoinflipBet(user_id=user_id,amount_usd=float(amount),choice=choice,result=result,win=bool(win),payout=float(payout))
+        db.add(bet); db.flush()
+
+        tx1.reference = f"coinflip_bet:{bet.id}"
+        if win: tx2.reference = f"coinflip_bet:{bet.id}"
+
+        db.commit()
+
+        return {"ok":True,"bet_id":bet.id,"user_id":user_id,"amount_usd":float(amount),"choice":choice,"result":result,"win":bool(win),"payout":float(payout),"wallet":_serialize_wallet(w)}
+    finally:
+        db.close()
+
+
+
+
+# --------------------------
+# SoftSwiss callbacks
+# --------------------------
+@app.post("/v2/a8r_casino.Player/Balance")
+async def softswiss_player_balance(request: Request, x_request_sign: str | None = Header(default=None, alias="X-REQUEST-SIGN")):
+    raw_body = await request.body()
+    _softswiss_verify_signature(raw_body, x_request_sign)
+
+    body = json.loads(raw_body.decode("utf-8") or "{}")
+    user_id = str(body.get("player_id") or body.get("user_id") or "").strip()
+    session_payload = str(body.get("session_payload") or "").strip()
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="player_id required")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+        wallet = db.query(Wallet).filter(Wallet.user_id == user_id).one()
+
+        if session_payload:
+            sess = db.execute(
+                text("SELECT id FROM softswiss_sessions WHERE session_payload=:sp AND user_id=:uid LIMIT 1"),
+                {"sp": session_payload, "uid": user_id},
+            ).fetchone()
+            if not sess:
+                raise HTTPException(status_code=400, detail="Invalid session_payload")
+
+        return {
+            "balance": _round2(float(wallet.balance_available or 0)),
+            "currency": SOFTSWISS_DEFAULT_CURRENCY,
+        }
+    finally:
+        db.close()
+
+
+
+
+@app.post("/v2/a8r_casino.Round/BetWin")
+async def softswiss_round_betwin(request: Request, x_request_sign: str | None = Header(default=None, alias="X-REQUEST-SIGN")):
+    raw_body = await request.body()
+    _softswiss_verify_signature(raw_body, x_request_sign)
+
+    body = json.loads(raw_body.decode("utf-8") or "{}")
+    user_id = str(body.get("player_id") or body.get("user_id") or "").strip()
+    session_payload = str(body.get("session_payload") or "").strip()
+    round_id = str(body.get("round_id") or body.get("round") or "").strip()
+    game_id = str(body.get("game_id") or body.get("game") or "").strip()
+    currency = str(body.get("currency") or SOFTSWISS_DEFAULT_CURRENCY).strip()
+
+    txs = body.get("transactions") or body.get("txs") or []
+    if isinstance(txs, dict):
+        txs = [txs]
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="player_id required")
+    if not isinstance(txs, list) or not txs:
+        raise HTTPException(status_code=400, detail="transactions required")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+        wallet = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
+
+        if round_id:
+            db.execute(text("""
+                INSERT INTO softswiss_rounds (provider, round_id, user_id, game_id, session_payload, status)
+                VALUES ('softswiss', :round_id, :user_id, :game_id, :session_payload, 'open')
+                ON CONFLICT (provider, round_id) DO NOTHING
+            """), {
+                "round_id": round_id,
+                "user_id": user_id,
+                "game_id": game_id,
+                "session_payload": session_payload,
+            })
+
+        responses = []
+
+        for tx in txs:
+            provider_tx_id = str(tx.get("id") or tx.get("transaction_id") or tx.get("tx_id") or "").strip()
+            tx_type = str(tx.get("type") or tx.get("action") or "").lower().strip()
+            amount = _softswiss_money(tx.get("amount"))
+
+            if not provider_tx_id:
+                raise HTTPException(status_code=400, detail="transaction id required")
+            if tx_type not in ("bet", "win"):
+                raise HTTPException(status_code=400, detail=f"unsupported transaction type: {tx_type}")
+
+            existing = db.execute(text("""
+                SELECT id, status, wallet_delta
+                FROM softswiss_transactions
+                WHERE provider_transaction_id = :provider_tx_id
+                LIMIT 1
+            """), {"provider_tx_id": provider_tx_id}).fetchone()
+
+            if existing:
+                responses.append({
+                    "id": provider_tx_id,
+                    "status": "duplicate",
+                    "balance": _round2(float(wallet.balance_available or 0)),
+                })
+                continue
+
+            tombstone = db.execute(text("""
+                SELECT id
+                FROM softswiss_transactions
+                WHERE original_transaction_id = :provider_tx_id
+                  AND status = 'tombstone'
+                LIMIT 1
+            """), {"provider_tx_id": provider_tx_id}).fetchone()
+
+            if tombstone:
+                responses.append({
+                    "id": provider_tx_id,
+                    "status": "cancelled_by_rollback",
+                    "balance": _round2(float(wallet.balance_available or 0)),
+                })
+                continue
+
+            if tx_type == "bet":
+                if float(wallet.balance_available or 0) < amount:
+                    raise HTTPException(status_code=400, detail="Insufficient balance")
+
+                wallet_delta = -amount
+                wallet.balance_total = _round2(float(wallet.balance_total or 0) + wallet_delta)
+                wallet.balance_available = _round2(float(wallet.balance_available or 0) + wallet_delta)
+                visible_type = "softswiss_bet"
+
+            else:
+                wallet_delta = amount
+                wallet.balance_total = _round2(float(wallet.balance_total or 0) + wallet_delta)
+                wallet.balance_available = _round2(float(wallet.balance_available or 0) + wallet_delta)
+                visible_type = "softswiss_win"
+
+            db.execute(text("""
+                INSERT INTO softswiss_transactions
+                (provider, provider_transaction_id, user_id, round_id, game_id, session_payload, type, amount, wallet_delta, currency, status, raw_payload)
+                VALUES
+                ('softswiss', :provider_tx_id, :user_id, :round_id, :game_id, :session_payload, :tx_type, :amount, :wallet_delta, :currency, 'processed', CAST(:raw_payload AS jsonb))
+            """), {
+                "provider_tx_id": provider_tx_id,
+                "user_id": user_id,
+                "round_id": round_id,
+                "game_id": game_id,
+                "session_payload": session_payload,
+                "tx_type": tx_type,
+                "amount": amount,
+                "wallet_delta": wallet_delta,
+                "currency": currency,
+                "raw_payload": json.dumps(tx),
+            })
+
+            db.add(Transaction(
+                user_id=user_id,
+                type=visible_type,
+                amount=float(wallet_delta),
+                balance_after=float(wallet.balance_total),
+                reference=f"softswiss:{provider_tx_id}",
+            ))
+
+            responses.append({
+                "id": provider_tx_id,
+                "status": "processed",
+                "balance": _round2(float(wallet.balance_available or 0)),
+            })
+
+        db.commit()
+
+        return {
+            "balance": _round2(float(wallet.balance_available or 0)),
+            "currency": currency,
+            "transactions": responses,
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"SoftSwiss BetWin failed: {str(e)}")
+    finally:
+        db.close()
+
+
+
+
+@app.post("/v2/a8r_casino.Round/Rollback")
+async def softswiss_round_rollback(request: Request, x_request_sign: str | None = Header(default=None, alias="X-REQUEST-SIGN")):
+    raw_body = await request.body()
+    _softswiss_verify_signature(raw_body, x_request_sign)
+
+    body = json.loads(raw_body.decode("utf-8") or "{}")
+    user_id = str(body.get("player_id") or body.get("user_id") or "").strip()
+    session_payload = str(body.get("session_payload") or "").strip()
+    round_id = str(body.get("round_id") or body.get("round") or "").strip()
+    game_id = str(body.get("game_id") or body.get("game") or "").strip()
+    currency = str(body.get("currency") or SOFTSWISS_DEFAULT_CURRENCY).strip()
+
+    rollbacks = body.get("transactions") or body.get("rollbacks") or body.get("txs") or []
+    if isinstance(rollbacks, dict):
+        rollbacks = [rollbacks]
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="player_id required")
+    if not isinstance(rollbacks, list) or not rollbacks:
+        raise HTTPException(status_code=400, detail="rollback transactions required")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+        wallet = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
+
+        responses = []
+
+        for rb in rollbacks:
+            rollback_tx_id = str(rb.get("id") or rb.get("rollback_transaction_id") or rb.get("transaction_id") or "").strip()
+            original_tx_id = str(rb.get("original_id") or rb.get("original_transaction_id") or rb.get("original_tx_id") or "").strip()
+
+            if not rollback_tx_id:
+                raise HTTPException(status_code=400, detail="rollback transaction id required")
+            if not original_tx_id:
+                raise HTTPException(status_code=400, detail="original transaction id required")
+
+            existing_rb = db.execute(text("""
+                SELECT id, status
+                FROM softswiss_transactions
+                WHERE rollback_transaction_id = :rollback_tx_id
+                LIMIT 1
+            """), {"rollback_tx_id": rollback_tx_id}).fetchone()
+
+            if existing_rb:
+                responses.append({
+                    "id": rollback_tx_id,
+                    "original_id": original_tx_id,
+                    "status": "duplicate",
+                    "balance": _round2(float(wallet.balance_available or 0)),
+                })
+                continue
+
+            original = db.execute(text("""
+                SELECT id, provider_transaction_id, type, amount, wallet_delta, status
+                FROM softswiss_transactions
+                WHERE provider_transaction_id = :original_tx_id
+                LIMIT 1
+            """), {"original_tx_id": original_tx_id}).fetchone()
+
+            if not original:
+                db.execute(text("""
+                    INSERT INTO softswiss_transactions
+                    (provider, rollback_transaction_id, original_transaction_id, user_id, round_id, game_id, session_payload, type, amount, wallet_delta, currency, status, raw_payload)
+                    VALUES
+                    ('softswiss', :rollback_tx_id, :original_tx_id, :user_id, :round_id, :game_id, :session_payload, 'rollback', 0, 0, :currency, 'tombstone', CAST(:raw_payload AS jsonb))
+                """), {
+                    "rollback_tx_id": rollback_tx_id,
+                    "original_tx_id": original_tx_id,
+                    "user_id": user_id,
+                    "round_id": round_id,
+                    "game_id": game_id,
+                    "session_payload": session_payload,
+                    "currency": currency,
+                    "raw_payload": json.dumps(rb),
+                })
+                responses.append({
+                    "id": rollback_tx_id,
+                    "original_id": original_tx_id,
+                    "status": "tombstone",
+                    "balance": _round2(float(wallet.balance_available or 0)),
+                })
+                continue
+
+            original_status = str(original.status or "")
+            if original_status == "rolled_back":
+                responses.append({
+                    "id": rollback_tx_id,
+                    "original_id": original_tx_id,
+                    "status": "already_rolled_back",
+                    "balance": _round2(float(wallet.balance_available or 0)),
+                })
+                continue
+
+            original_delta = float(original.wallet_delta or 0)
+            rollback_delta = _round2(-original_delta)
+
+            # Reversal:
+            # original bet delta was negative, rollback credits money back.
+            # original win delta was positive, rollback debits money back.
+            if rollback_delta < 0 and float(wallet.balance_available or 0) < abs(rollback_delta):
+                raise HTTPException(status_code=400, detail="Insufficient balance for rollback")
+
+            wallet.balance_total = _round2(float(wallet.balance_total or 0) + rollback_delta)
+            wallet.balance_available = _round2(float(wallet.balance_available or 0) + rollback_delta)
+
+            db.execute(text("""
+                UPDATE softswiss_transactions
+                SET status = 'rolled_back'
+                WHERE provider_transaction_id = :original_tx_id
+            """), {"original_tx_id": original_tx_id})
+
+            db.execute(text("""
+                INSERT INTO softswiss_transactions
+                (provider, rollback_transaction_id, original_transaction_id, user_id, round_id, game_id, session_payload, type, amount, wallet_delta, currency, status, raw_payload)
+                VALUES
+                ('softswiss', :rollback_tx_id, :original_tx_id, :user_id, :round_id, :game_id, :session_payload, 'rollback', :amount, :wallet_delta, :currency, 'processed', CAST(:raw_payload AS jsonb))
+            """), {
+                "rollback_tx_id": rollback_tx_id,
+                "original_tx_id": original_tx_id,
+                "user_id": user_id,
+                "round_id": round_id,
+                "game_id": game_id,
+                "session_payload": session_payload,
+                "amount": abs(original_delta),
+                "wallet_delta": rollback_delta,
+                "currency": currency,
+                "raw_payload": json.dumps(rb),
+            })
+
+            db.add(Transaction(
+                user_id=user_id,
+                type="softswiss_rollback",
+                amount=float(rollback_delta),
+                balance_after=float(wallet.balance_total),
+                reference=f"softswiss_rollback:{rollback_tx_id}",
+            ))
+
+            responses.append({
+                "id": rollback_tx_id,
+                "original_id": original_tx_id,
+                "status": "processed",
+                "balance": _round2(float(wallet.balance_available or 0)),
+            })
+
+        db.commit()
+
+        return {
+            "balance": _round2(float(wallet.balance_available or 0)),
+            "currency": currency,
+            "transactions": responses,
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"SoftSwiss Rollback failed: {str(e)}")
+    finally:
+        db.close()
+
+
+
+
+@app.post("/v2/a8r_casino.Round/Finish")
+async def softswiss_round_finish(request: Request, x_request_sign: str | None = Header(default=None, alias="X-REQUEST-SIGN")):
+    raw_body = await request.body()
+    _softswiss_verify_signature(raw_body, x_request_sign)
+
+    body = json.loads(raw_body.decode("utf-8") or "{}")
+    user_id = str(body.get("player_id") or body.get("user_id") or "").strip()
+    session_payload = str(body.get("session_payload") or "").strip()
+    round_id = str(body.get("round_id") or body.get("round") or "").strip()
+    game_id = str(body.get("game_id") or body.get("game") or "").strip()
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="player_id required")
+    if not round_id:
+        raise HTTPException(status_code=400, detail="round_id required")
+
+    db = SessionLocal()
+    try:
+        db.execute(text("""
+            INSERT INTO softswiss_rounds (provider, round_id, user_id, game_id, session_payload, status)
+            VALUES ('softswiss', :round_id, :user_id, :game_id, :session_payload, 'closed')
+            ON CONFLICT (provider, round_id)
+            DO UPDATE SET status='closed', updated_at=NOW()
+        """), {
+            "round_id": round_id,
+            "user_id": user_id,
+            "game_id": game_id,
+            "session_payload": session_payload,
+        })
+        db.commit()
+        return {"ok": True}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"SoftSwiss Finish failed: {str(e)}")
+    finally:
+        db.close()
+
+
+@app.get("/studio/coinflip/bets/{user_id}")
+def coinflip_bets(user_id: str, limit: int = 50):
+    db = SessionLocal()
+    try:
+        rows = db.query(CoinflipBet).filter(CoinflipBet.user_id == user_id).order_by(CoinflipBet.id.desc()).limit(max(1,min(limit,200))).all()
+        return {"user_id":user_id,"count":len(rows),"bets":[{"id":b.id,"amount_usd":float(b.amount_usd),"choice":b.choice,"result":b.result,"win":bool(b.win),"payout":float(b.payout),"created_at":str(b.created_at)} for b in rows]}
+    finally:
+        db.close()
+
+
+# ==========================
+# STUDIO: HI-LO
+# ==========================
+HILO_HOUSE_EDGE = float(os.getenv("HILO_HOUSE_EDGE", "0.05"))
+
+def _hilo_draw_card() -> int:
+    return random.randint(1, 13)
+
+def _hilo_allowed_choices(card: int) -> list[str]:
+    if int(card) <= 1:
+        return ["high"]
+    if int(card) >= 13:
+        return ["low"]
+    return ["high", "low"]
+
+def _hilo_win_probability(card: int, choice: str) -> float:
+    c = int(card)
+    ch = str(choice or "").lower().strip()
+    if ch == "high":
+        wins = max(0, 13 - c)
+    elif ch == "low":
+        wins = max(0, c - 1)
+    else:
+        return 0.0
+    return wins / 13.0
+
+def _hilo_next_multiplier(current_multiplier: float, card: int, choice: str) -> float:
+    wp = _hilo_win_probability(card, choice)
+    if wp <= 0:
+        raise HTTPException(status_code=400, detail="Invalid HI-LO probability")
+    return _round2(float(current_multiplier) * ((1.0 - float(HILO_HOUSE_EDGE)) / wp))
+
+@app.post("/studio/hilo/start")
+async def hilo_start(request: Request):
+    body = await request.json()
+    user_id = str(body.get("user_id", "")).strip()
+    amount = float(body.get("amount_usd", 0))
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+        w = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
+
+        if float(w.balance_available) < amount:
+            raise HTTPException(status_code=400, detail="Insufficient balance")
+
+        active = db.query(HiloBet).filter(HiloBet.user_id == user_id, HiloBet.status == "active").order_by(HiloBet.id.desc()).one_or_none()
+        if active:
+            raise HTTPException(status_code=400, detail="Active HI-LO round already exists")
+
+        w.balance_total = _round2(w.balance_total - amount)
+        w.balance_available = _round2(w.balance_available - amount)
+
+        tx1 = Transaction(user_id=user_id, type="hilo_bet", amount=-float(amount), balance_after=float(w.balance_total), reference=None)
+        db.add(tx1)
+
+        card = _hilo_draw_card()
+        bet = HiloBet(user_id=user_id, amount_usd=float(amount), start_card=int(card), current_card=int(card), result_card=None, choice=None, streak=0, multiplier=1.0, status="active", payout=0.0)
+        db.add(bet)
+        db.flush()
+
+        tx1.reference = f"hilo_bet:{bet.id}"
+        db.commit()
+
+        return {"ok": True, "bet_id": bet.id, "user_id": user_id, "amount_usd": float(amount), "start_card": int(bet.start_card), "current_card": int(bet.current_card), "streak": int(bet.streak), "multiplier": float(bet.multiplier), "status": str(bet.status), "allowed_choices": _hilo_allowed_choices(int(bet.current_card)), "cashout_value": 0.0, "wallet": _serialize_wallet(w)}
+    finally:
+        db.close()
+
+@app.post("/studio/hilo/next")
+async def hilo_next(request: Request):
+    body = await request.json()
+    bet_id = int(body.get("bet_id", 0))
+    choice = str(body.get("choice", "")).lower().strip()
+
+    if bet_id <= 0:
+        raise HTTPException(status_code=400, detail="bet_id required")
+    if choice not in ("high", "low"):
+        raise HTTPException(status_code=400, detail="choice must be high or low")
+
+    db = SessionLocal()
+    try:
+        bet = db.query(HiloBet).filter(HiloBet.id == bet_id).with_for_update().one_or_none()
+        if not bet:
+            raise HTTPException(status_code=404, detail="HI-LO bet not found")
+        if str(bet.status) != "active":
+            raise HTTPException(status_code=400, detail="HI-LO round is not active")
+
+        current_card = int(bet.current_card)
+        allowed = _hilo_allowed_choices(current_card)
+        if choice not in allowed:
+            raise HTTPException(status_code=400, detail=f"Only {allowed[0]} allowed from card {current_card}")
+
+        next_card = _hilo_draw_card()
+        won = (choice == "high" and next_card > current_card) or (choice == "low" and next_card < current_card)
+
+        bet.choice = choice
+        bet.result_card = int(next_card)
+
+        if won:
+            bet.streak = int(bet.streak) + 1
+            bet.multiplier = float(_hilo_next_multiplier(float(bet.multiplier), current_card, choice))
+            bet.current_card = int(next_card)
+            db.commit()
+            return {"ok": True, "bet_id": bet.id, "choice": choice, "previous_card": current_card, "result_card": int(next_card), "win": True, "status": str(bet.status), "streak": int(bet.streak), "multiplier": float(bet.multiplier), "cashout_value": _round2(float(bet.amount_usd) * float(bet.multiplier)), "allowed_choices": _hilo_allowed_choices(int(bet.current_card))}
+
+        bet.status = "lost"
+        bet.payout = 0.0
+        db.commit()
+        return {"ok": True, "bet_id": bet.id, "choice": choice, "previous_card": current_card, "result_card": int(next_card), "win": False, "status": str(bet.status), "streak": int(bet.streak), "multiplier": float(bet.multiplier), "cashout_value": 0.0, "allowed_choices": []}
+    finally:
+        db.close()
+
+@app.post("/studio/hilo/cashout")
+async def hilo_cashout(request: Request):
+    body = await request.json()
+    bet_id = int(body.get("bet_id", 0))
+    if bet_id <= 0:
+        raise HTTPException(status_code=400, detail="bet_id required")
+    db = SessionLocal()
+    try:
+        bet = db.query(HiloBet).filter(HiloBet.id == bet_id).with_for_update().one_or_none()
+        if not bet:
+            raise HTTPException(status_code=404, detail="HI-LO bet not found")
+        if str(bet.status) != "active":
+            raise HTTPException(status_code=400, detail="HI-LO round is not active")
+        if int(bet.streak) <= 0:
+            raise HTTPException(status_code=400, detail="Cannot cash out before first successful pick")
+        w = db.query(Wallet).filter(Wallet.user_id == bet.user_id).with_for_update().one()
+        payout = _round2(float(bet.amount_usd) * float(bet.multiplier))
+        w.balance_total = _round2(w.balance_total + payout)
+        w.balance_available = _round2(w.balance_available + payout)
+        bet.status = "cashed_out"
+        bet.payout = float(payout)
+        db.add(Transaction(user_id=bet.user_id, type="hilo_payout", amount=float(payout), balance_after=float(w.balance_total), reference=f"hilo_bet:{bet.id}"))
+        db.commit()
+        return {"ok": True, "bet_id": bet.id, "status": str(bet.status), "streak": int(bet.streak), "multiplier": float(bet.multiplier), "payout": float(bet.payout), "wallet": _serialize_wallet(w)}
+    finally:
+        db.close()
+
+@app.get("/studio/hilo/bets/{user_id}")
+def hilo_bets(user_id: str, limit: int = 50):
+    db = SessionLocal()
+    try:
+        rows = db.query(HiloBet).filter(HiloBet.user_id == user_id).order_by(HiloBet.id.desc()).limit(max(1, min(limit, 200))).all()
+        return {"user_id": user_id, "count": len(rows), "bets": [{"id": b.id, "amount_usd": float(b.amount_usd), "start_card": int(b.start_card), "current_card": int(b.current_card), "result_card": int(b.result_card) if b.result_card is not None else None, "choice": b.choice, "streak": int(b.streak), "multiplier": float(b.multiplier), "status": str(b.status), "payout": float(b.payout), "created_at": str(b.created_at), "updated_at": str(b.updated_at)} for b in rows]}
+    finally:
+        db.close()
+
+
+# ==========================
+# STUDIO: MINES
+# ==========================
+MINES_GRID_SIZE = int(os.getenv("MINES_GRID_SIZE", "25"))
+MINES_MIN_COUNT = int(os.getenv("MINES_MIN_COUNT", "1"))
+MINES_MAX_COUNT = int(os.getenv("MINES_MAX_COUNT", "10"))
+MINES_HOUSE_EDGE = float(os.getenv("MINES_HOUSE_EDGE", "0.03"))
+
+class MinesBet(Base):
+    __tablename__ = "mines_bets"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(64), nullable=False)
+    amount_usd = Column(Float, nullable=False)
+    mine_count = Column(Integer, nullable=False)
+    grid_size = Column(Integer, nullable=False, default=25)
+    mines_positions = Column(Text, nullable=False, default="[]")
+    revealed_tiles = Column(Text, nullable=False, default="[]")
+    hit_mine = Column(Boolean, nullable=False, default=False)
+    multiplier = Column(Float, nullable=False, default=1.0)
+    status = Column(String(32), nullable=False, default="active")  # active, lost, cashed_out
+    payout = Column(Float, nullable=False, default=0.0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+def _mines_parse_json_list(value) -> list[int]:
+    try:
+        data = json.loads(value or "[]")
+        if not isinstance(data, list):
+            return []
+        out = []
+        for x in data:
+            try:
+                out.append(int(x))
+            except Exception:
+                pass
+        return out
+    except Exception:
+        return []
+
+def _mines_dump_json_list(items: list[int]) -> str:
+    return json.dumps([int(x) for x in items])
+
+def _mines_generate_positions(grid_size: int, mine_count: int) -> list[int]:
+    if mine_count <= 0 or mine_count >= grid_size:
+        raise HTTPException(status_code=400, detail="Invalid mine_count")
+    return sorted(random.sample(range(grid_size), mine_count))
+
+def _mines_multiplier(grid_size: int, mine_count: int, safe_reveals: int) -> float:
+    safe_tiles = int(grid_size) - int(mine_count)
+    r = int(safe_reveals)
+    if r <= 0:
+        return 1.0
+    if r > safe_tiles:
+        raise HTTPException(status_code=400, detail="Invalid safe reveals")
+    value = (math.comb(int(grid_size), r) / math.comb(int(safe_tiles), r)) * (1.0 - float(MINES_HOUSE_EDGE))
+    return _round2(value)
+
+def _serialize_mines_bet(b):
+    mines_positions = _mines_parse_json_list(b.mines_positions)
+    revealed_tiles = _mines_parse_json_list(b.revealed_tiles)
+    safe_reveals = len([x for x in revealed_tiles if x not in set(mines_positions)])
+    return {
+        "id": int(b.id),
+        "amount_usd": float(b.amount_usd),
+        "mine_count": int(b.mine_count),
+        "grid_size": int(b.grid_size),
+        "revealed_tiles": revealed_tiles,
+        "revealed_count": len(revealed_tiles),
+        "safe_reveals": int(safe_reveals),
+        "hit_mine": bool(b.hit_mine),
+        "multiplier": float(b.multiplier),
+        "status": str(b.status),
+        "payout": float(b.payout),
+        "created_at": str(b.created_at),
+        "updated_at": str(b.updated_at),
+    }
+
+@app.post("/studio/mines/start")
+async def mines_start(request: Request):
+    body = await request.json()
+    user_id = str(body.get("user_id", "")).strip()
+    amount = float(body.get("amount_usd", 0))
+    mine_count = int(body.get("mine_count", 0))
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
+    if mine_count < MINES_MIN_COUNT or mine_count > MINES_MAX_COUNT:
+        raise HTTPException(status_code=400, detail=f"mine_count must be between {MINES_MIN_COUNT} and {MINES_MAX_COUNT}")
+
+    db = SessionLocal()
+    try:
+        _get_or_create_user_and_wallet(db, user_id)
+        w = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
+
+        if float(w.balance_available) < amount:
+            raise HTTPException(status_code=400, detail="Insufficient balance")
+
+        active = db.query(MinesBet).filter(MinesBet.user_id == user_id, MinesBet.status == "active").order_by(MinesBet.id.desc()).one_or_none()
+        if active:
+            raise HTTPException(status_code=400, detail="Active Mines round already exists")
+
+        w.balance_total = _round2(w.balance_total - amount)
+        w.balance_available = _round2(w.balance_available - amount)
+
+        tx1 = Transaction(user_id=user_id, type="mines_bet", amount=-float(amount), balance_after=float(w.balance_total), reference=None)
+        db.add(tx1)
+
+        mines_positions = _mines_generate_positions(MINES_GRID_SIZE, mine_count)
+        bet = MinesBet(
+            user_id=user_id,
+            amount_usd=float(amount),
+            mine_count=int(mine_count),
+            grid_size=int(MINES_GRID_SIZE),
+            mines_positions=_mines_dump_json_list(mines_positions),
+            revealed_tiles="[]",
+            hit_mine=False,
+            multiplier=1.0,
+            status="active",
+            payout=0.0,
+        )
+        db.add(bet)
+        db.flush()
+
+        tx1.reference = f"mines_bet:{bet.id}"
+        db.commit()
+
+        return {
+            "ok": True,
+            "bet_id": int(bet.id),
+            "user_id": user_id,
+            "amount_usd": float(bet.amount_usd),
+            "mine_count": int(bet.mine_count),
+            "grid_size": int(bet.grid_size),
+            "revealed_tiles": [],
+            "revealed_count": 0,
+            "safe_reveals": 0,
+            "multiplier": 1.0,
+            "cashout_value": 0.0,
+            "status": str(bet.status),
+            "wallet": _serialize_wallet(w),
+        }
+    finally:
+        db.close()
+
+@app.post("/studio/mines/reveal")
+async def mines_reveal(request: Request):
+    body = await request.json()
+    bet_id = int(body.get("bet_id", 0))
+    tile_index = int(body.get("tile_index", -1))
+
+    if bet_id <= 0:
+        raise HTTPException(status_code=400, detail="bet_id required")
+    if tile_index < 0 or tile_index >= MINES_GRID_SIZE:
+        raise HTTPException(status_code=400, detail=f"tile_index must be between 0 and {MINES_GRID_SIZE - 1}")
+
+    db = SessionLocal()
+    try:
+        bet = db.query(MinesBet).filter(MinesBet.id == bet_id).with_for_update().one_or_none()
+        if not bet:
+            raise HTTPException(status_code=404, detail="Mines bet not found")
+        if str(bet.status) != "active":
+            raise HTTPException(status_code=400, detail="Mines round is not active")
+
+        mines_positions = _mines_parse_json_list(bet.mines_positions)
+        revealed_tiles = _mines_parse_json_list(bet.revealed_tiles)
+
+        if tile_index in revealed_tiles:
+            raise HTTPException(status_code=400, detail="Tile already revealed")
+
+        revealed_tiles.append(int(tile_index))
+        bet.revealed_tiles = _mines_dump_json_list(revealed_tiles)
+
+        if tile_index in set(mines_positions):
+            bet.hit_mine = True
+            bet.status = "lost"
+            bet.payout = 0.0
+            db.commit()
+            return {
+                "ok": True,
+                "bet_id": int(bet.id),
+                "tile_index": int(tile_index),
+                "is_mine": True,
+                "revealed_tiles": revealed_tiles,
+                "revealed_count": len(revealed_tiles),
+                "safe_reveals": len([x for x in revealed_tiles if x not in set(mines_positions)]),
+                "multiplier": float(bet.multiplier),
+                "cashout_value": 0.0,
+                "status": str(bet.status),
+                "game_over": True,
+            }
+
+        safe_reveals = len([x for x in revealed_tiles if x not in set(mines_positions)])
+        bet.multiplier = float(_mines_multiplier(int(bet.grid_size), int(bet.mine_count), int(safe_reveals)))
+        db.commit()
+
+        return {
+            "ok": True,
+            "bet_id": int(bet.id),
+            "tile_index": int(tile_index),
+            "is_mine": False,
+            "revealed_tiles": revealed_tiles,
+            "revealed_count": len(revealed_tiles),
+            "safe_reveals": int(safe_reveals),
+            "multiplier": float(bet.multiplier),
+            "cashout_value": _round2(float(bet.amount_usd) * float(bet.multiplier)),
+            "status": str(bet.status),
+            "game_over": False,
+        }
+    finally:
+        db.close()
+
+@app.post("/studio/mines/cashout")
+async def mines_cashout(request: Request):
+    body = await request.json()
+    bet_id = int(body.get("bet_id", 0))
+    if bet_id <= 0:
+        raise HTTPException(status_code=400, detail="bet_id required")
+
+    db = SessionLocal()
+    try:
+        bet = db.query(MinesBet).filter(MinesBet.id == bet_id).with_for_update().one_or_none()
+        if not bet:
+            raise HTTPException(status_code=404, detail="Mines bet not found")
+        if str(bet.status) != "active":
+            raise HTTPException(status_code=400, detail="Mines round is not active")
+
+        mines_positions = _mines_parse_json_list(bet.mines_positions)
+        revealed_tiles = _mines_parse_json_list(bet.revealed_tiles)
+        safe_reveals = len([x for x in revealed_tiles if x not in set(mines_positions)])
+
+        if safe_reveals <= 0:
+            raise HTTPException(status_code=400, detail="Cannot cash out before first safe reveal")
+
+        w = db.query(Wallet).filter(Wallet.user_id == bet.user_id).with_for_update().one()
+        payout = _round2(float(bet.amount_usd) * float(bet.multiplier))
+
+        w.balance_total = _round2(w.balance_total + payout)
+        w.balance_available = _round2(w.balance_available + payout)
+
+        bet.status = "cashed_out"
+        bet.payout = float(payout)
+
+        db.add(Transaction(user_id=bet.user_id, type="mines_payout", amount=float(payout), balance_after=float(w.balance_total), reference=f"mines_bet:{bet.id}"))
+        db.commit()
+
+        return {
+            "ok": True,
+            "bet_id": int(bet.id),
+            "status": str(bet.status),
+            "revealed_count": len(revealed_tiles),
+            "safe_reveals": int(safe_reveals),
+            "multiplier": float(bet.multiplier),
+            "payout": float(bet.payout),
+            "wallet": _serialize_wallet(w),
+        }
+    finally:
+        db.close()
+
+@app.get("/studio/mines/bets/{user_id}")
+def mines_bets(user_id: str, limit: int = 50):
+    db = SessionLocal()
+    try:
+        rows = db.query(MinesBet).filter(MinesBet.user_id == user_id).order_by(MinesBet.id.desc()).limit(max(1, min(limit, 200))).all()
+        return {"user_id": user_id, "count": len(rows), "bets": [_serialize_mines_bet(b) for b in rows]}
+    finally:
+        db.close()
+
+
 
 # ==========================
 # GLOBAL CRASH V2 (24/7 shared rounds)
@@ -2450,8 +3417,16 @@ def _crash_live_multiplier_from_elapsed(elapsed_seconds: float) -> float:
     """
     Live crash pacing curve for MVP.
     ~1.38x at 2s, ~1.90x at 4s, ~2.61x at 6s, ~4.95x at 10s
+    Hardened against overflow / inf / NaN.
     """
-    value = math.exp(elapsed_seconds * 0.16)
+    safe_elapsed = max(0.0, min(float(elapsed_seconds or 0.0), 60.0))
+    exp_input = min(safe_elapsed * 0.16, 50.0)
+    try:
+        value = math.exp(exp_input)
+    except OverflowError:
+        value = math.exp(50.0)
+    if not math.isfinite(value):
+        value = 1.0
     return round(max(1.0, value), 2)
 
 
@@ -2544,7 +3519,7 @@ def _crash_settle_round_if_needed(db, round_row):
         round_row.ended_at = func.now()
 
         tx = Transaction(
-            user_id=user_id,
+            user_id=bet.user_id,
             type="crash_payout",
             amount=float(payout),
             balance_after=float(wallet.balance_total),
@@ -2568,344 +3543,26 @@ def _crash_settle_round_if_needed(db, round_row):
     return live
 
 
-@app.get("/studio/crash/live/{round_id}")
-def crash_live_round(round_id: int):
-    db = SessionLocal()
-    try:
-        round_row = (
-            db.query(CrashRound)
-            .filter(CrashRound.id == round_id)
-            .with_for_update()
-            .one_or_none()
-        )
-        if not round_row:
-            raise HTTPException(status_code=404, detail="Crash round not found")
-
-        live = _crash_settle_round_if_needed(db, round_row)
-        db.commit()
-
-        bet = (
-            db.query(CrashBet)
-            .filter(CrashBet.round_id == round_id)
-            .order_by(CrashBet.id.desc())
-            .one_or_none()
-        )
-
-        return {
-            "ok": True,
-            "round_id": round_row.id,
-            "user_id": round_row.user_id,
-            "status": str(round_row.status),
-            "current_multiplier": float(live["current_multiplier"]),
-            "crash_point": float(round_row.crash_point),
-            "crashed": bool(live["crashed"]),
-            "elapsed_seconds": float(live["elapsed_seconds"]),
-            "server_seed_hash": round_row.server_seed_hash,
-            "client_seed": round_row.client_seed,
-            "nonce": round_row.nonce,
-            "started_at": str(round_row.started_at) if round_row.started_at else None,
-            "ended_at": str(round_row.ended_at) if round_row.ended_at else None,
-            "bet": {
-                "id": bet.id,
-                "user_id": bet.user_id,
-                "amount_usd": float(bet.amount_usd),
-                "auto_cashout": float(bet.auto_cashout) if bet.auto_cashout is not None else None,
-                "status": str(bet.status),
-                "cashout_multiplier": float(bet.cashout_multiplier) if bet.cashout_multiplier is not None else None,
-                "payout": float(bet.payout),
-                "created_at": str(bet.created_at),
-            } if bet else None,
-        }
-    finally:
-        db.close()
-
-
-@app.post("/studio/crash/bet")
-async def crash_bet(request: Request):
-    """
-    Body:
-    {
-      "user_id":"user_1",
-      "amount_usd":1,
-      "auto_cashout": 1.50   # optional
-    }
-    """
-    body = await request.json()
-
-    user_id = str(body.get("user_id", "")).strip()
-    amount = float(body.get("amount_usd", 0))
-    auto_cashout = body.get("auto_cashout", None)
-
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id required")
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="amount_usd must be > 0")
-
-    if auto_cashout is not None:
-        auto_cashout = float(auto_cashout)
-        if auto_cashout <= 1.0:
-            raise HTTPException(status_code=400, detail="auto_cashout must be > 1.0")
-
-    db = SessionLocal()
-    try:
-        _get_or_create_user_and_wallet(db, user_id)
-        _get_or_create_crash_seed(db, user_id)
-
-        wallet = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
-        seed = db.query(CrashSeed).filter(CrashSeed.user_id == user_id).with_for_update().one()
-
-        if float(wallet.balance_available) < amount:
-            raise HTTPException(status_code=400, detail="Insufficient balance")
-
-        # debit stake immediately
-        wallet.balance_total = _round2(wallet.balance_total - amount)
-        wallet.balance_available = _round2(wallet.balance_available - amount)
-
-        tx1 = Transaction(
-            user_id=user_id,
-            type="crash_bet",
-            amount=-float(amount),
-            balance_after=float(wallet.balance_total),
-            reference=None,
-        )
-        db.add(tx1)
-
-        # advance seed nonce and create a live round
-        seed.nonce += 1
-        crash_point = _crash_point_from_seed(seed.server_seed, seed.client_seed, seed.nonce)
-
-        round_row = CrashRound(
-            user_id=user_id,
-            server_seed_hash=seed.server_seed_hash,
-            client_seed=seed.client_seed,
-            nonce=seed.nonce,
-            crash_point=crash_point,
-            status="running",
-            started_at=func.now(),
-        )
-        db.add(round_row)
-        db.flush()
-
-        bet = CrashBet(
-            user_id=user_id,
-            round_id=round_row.id,
-            amount_usd=float(amount),
-            auto_cashout=auto_cashout,
-            status="active",
-            cashout_multiplier=None,
-            payout=0,
-        )
-        db.add(bet)
-        db.flush()
-
-        tx1.reference = f"crash_bet:{bet.id}"
-
-        db.commit()
-
-        return {
-            "ok": True,
-            "round_id": round_row.id,
-            "bet_id": bet.id,
-            "user_id": user_id,
-            "amount_usd": amount,
-            "auto_cashout": auto_cashout,
-            "crash_point": None,  # hidden until round resolves
-            "status": bet.status,
-            "payout": float(bet.payout),
-            "server_seed_hash": seed.server_seed_hash,
-            "client_seed": seed.client_seed,
-            "nonce": seed.nonce,
-            "wallet": _serialize_wallet(wallet),
-        }
-    finally:
-        db.close()
-
-@app.post("/studio/crash/cashout/{bet_id}")
-def crash_manual_cashout(bet_id: int):
-    db = SessionLocal()
-    try:
-        bet = db.query(CrashBet).filter(CrashBet.id == bet_id).with_for_update().one_or_none()
-        if not bet:
-            raise HTTPException(status_code=404, detail="Crash bet not found")
-
-        round_row = db.query(CrashRound).filter(CrashRound.id == bet.round_id).with_for_update().one()
-        wallet = db.query(Wallet).filter(Wallet.user_id == bet.user_id).with_for_update().one()
-
-        live = _crash_settle_round_if_needed(db, round_row)
-
-        if bet.status != "active":
-            db.commit()
-            return {
-                "ok": True,
-                "bet_id": bet.id,
-                "status": bet.status,
-                "cashout_multiplier": float(bet.cashout_multiplier) if bet.cashout_multiplier is not None else None,
-                "crash_point": float(round_row.crash_point),
-                "payout": float(bet.payout),
-                "wallet": _serialize_wallet(wallet),
-            }
-
-        if live["crashed"]:
-            bet.status = "lost"
-            bet.cashout_multiplier = None
-            bet.payout = 0.0
-
-            round_row.status = "crashed"
-            round_row.ended_at = func.now()
-
-            db.commit()
-            return {
-                "ok": True,
-                "bet_id": bet.id,
-                "status": bet.status,
-                "crash_point": float(round_row.crash_point),
-                "payout": 0.0,
-                "wallet": _serialize_wallet(wallet),
-            }
-
-        manual_cashout_multiplier = float(live["current_multiplier"])
-        payout = _round2(float(bet.amount_usd) * manual_cashout_multiplier)
-
-        wallet.balance_total = _round2(wallet.balance_total + payout)
-        wallet.balance_available = _round2(wallet.balance_available + payout)
-
-        bet.status = "cashed_out"
-        bet.cashout_multiplier = manual_cashout_multiplier
-        bet.payout = payout
-
-        round_row.status = "completed"
-        round_row.ended_at = func.now()
-
-        tx = Transaction(
-            user_id=bet.user_id,
-            type="crash_payout",
-            amount=float(payout),
-            balance_after=float(wallet.balance_total),
-            reference=f"crash_bet:{bet.id}",
-        )
-        db.add(tx)
-
-        if float(payout) >= 1:
-            _push_live_feed_event(
-                game="crash",
-                user_id=bet.user_id,
-                amount_usd=float(bet.amount_usd),
-                payout=float(payout),
-                multiplier=float(manual_cashout_multiplier),
-                source="real",
-                provider="coin2win",
-            )
-
-        db.commit()
-
-        return {
-            "ok": True,
-            "bet_id": bet.id,
-            "status": bet.status,
-            "cashout_multiplier": manual_cashout_multiplier,
-            "crash_point": float(round_row.crash_point),
-            "payout": float(payout),
-            "wallet": _serialize_wallet(wallet),
-        }
-    finally:
-        db.close()
-
-@app.post("/studio/crash/resolve/{bet_id}")
-def crash_resolve_unfinished(bet_id: int):
-    """
-    Finalize an active manual-cashout bet only if the live round has already crashed.
-    """
-    db = SessionLocal()
-    try:
-        bet = db.query(CrashBet).filter(CrashBet.id == bet_id).with_for_update().one_or_none()
-        if not bet:
-            raise HTTPException(status_code=404, detail="Crash bet not found")
-
-        round_row = db.query(CrashRound).filter(CrashRound.id == bet.round_id).with_for_update().one()
-
-        live = _crash_settle_round_if_needed(db, round_row)
-
-        if bet.status != "active":
-            db.commit()
-            return {
-                "ok": True,
-                "bet_id": bet.id,
-                "status": bet.status,
-                "payout": float(bet.payout),
-                "crash_point": float(round_row.crash_point),
-            }
-
-        if not live["crashed"]:
-            db.commit()
-            return {
-                "ok": True,
-                "bet_id": bet.id,
-                "status": "running",
-                "current_multiplier": float(live["current_multiplier"]),
-                "crash_point": None,
-                "payout": float(bet.payout),
-            }
-
-        bet.status = "lost"
-        bet.cashout_multiplier = None
-        bet.payout = 0.0
-
-        round_row.status = "crashed"
-        round_row.ended_at = func.now()
-
-        db.commit()
-
-        return {
-            "ok": True,
-            "bet_id": bet.id,
-            "status": bet.status,
-            "crash_point": float(round_row.crash_point),
-            "payout": 0.0,
-        }
-    finally:
-        db.close()
-
-@app.get("/studio/crash/bets/{user_id}")
-def crash_bets(user_id: str, limit: int = 50):
-    db = SessionLocal()
-    try:
-        rows = (
-            db.query(CrashBet)
-            .filter(CrashBet.user_id == user_id)
-            .order_by(CrashBet.id.desc())
-            .limit(max(1, min(limit, 200)))
-            .all()
-        )
-        return {
-            "user_id": user_id,
-            "count": len(rows),
-            "bets": [
-                {
-                    "id": b.id,
-                    "round_id": b.round_id,
-                    "amount_usd": float(b.amount_usd),
-                    "auto_cashout": float(b.auto_cashout) if b.auto_cashout is not None else None,
-                    "status": b.status,
-                    "cashout_multiplier": float(b.cashout_multiplier) if b.cashout_multiplier is not None else None,
-                    "payout": float(b.payout),
-                    "created_at": str(b.created_at),
-                }
-                for b in rows
-            ],
-        }
-    finally:
-        db.close()
-
-
-
-
-# ==========================
-# GLOBAL CRASH V2 RUNTIME
-# ==========================
-
 def _utcnow():
     from datetime import datetime, timezone
     return datetime.now(timezone.utc)
+
+
+def _global_crash_live_multiplier_from_elapsed(elapsed_seconds: float) -> float:
+    """
+    Smooth crash pacing:
+    ~1.38x at 2s, ~1.90x at 4s, ~2.61x at 6s, ~4.95x at 10s
+    Hardened against overflow / inf / NaN.
+    """
+    safe_elapsed = max(0.0, min(float(elapsed_seconds or 0.0), 60.0))
+    exp_input = min(safe_elapsed * 0.16, 50.0)
+    try:
+        value = math.exp(exp_input)
+    except OverflowError:
+        value = math.exp(50.0)
+    if not math.isfinite(value):
+        value = 1.0
+    return round(max(1.0, value), 2)
 
 
 def _ensure_aware(dt):
@@ -2915,15 +3572,6 @@ def _ensure_aware(dt):
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
-
-
-def _global_crash_live_multiplier_from_elapsed(elapsed_seconds: float) -> float:
-    """
-    Smooth crash pacing:
-    ~1.38x at 2s, ~1.90x at 4s, ~2.61x at 6s, ~4.95x at 10s
-    """
-    value = math.exp(max(0.0, elapsed_seconds) * 0.16)
-    return round(max(1.0, value), 2)
 
 
 def _global_crash_round_state(round_row) -> dict:
@@ -3511,13 +4159,224 @@ def _mask_public_user(user_id: str) -> str:
     return raw[:1] + "***" + raw[-3:]
 
 
+
+
+# --------------------------
+# SoftSwiss Backoffice / Games
+# --------------------------
+@app.get("/admin/softswiss/games")
+def admin_softswiss_games(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        rows = db.execute(text("""
+            SELECT id, provider_game_id, title, category, image_url,
+                   is_enabled, is_featured, is_live, sort_order, created_at, updated_at
+            FROM softswiss_games
+            ORDER BY sort_order ASC, title ASC
+        """)).mappings().all()
+        return {"ok": True, "count": len(rows), "games": [dict(r) for r in rows]}
+    finally:
+        db.close()
+
+
+@app.post("/admin/softswiss/games/{game_id}/update")
+async def admin_softswiss_game_update(game_id: int, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    body = await request.json()
+
+    allowed = {
+        "title": body.get("title"),
+        "category": body.get("category"),
+        "image_url": body.get("image_url"),
+        "is_enabled": body.get("is_enabled"),
+        "is_featured": body.get("is_featured"),
+        "is_live": body.get("is_live"),
+        "sort_order": body.get("sort_order"),
+    }
+    allowed = {k: v for k, v in allowed.items() if v is not None}
+
+    if not allowed:
+        return {"ok": True, "updated": False}
+
+    sets = []
+    params = {"game_id": game_id}
+    for k, v in allowed.items():
+        sets.append(f"{k}=:{k}")
+        params[k] = v
+    sets.append("updated_at=NOW()")
+
+    db = SessionLocal()
+    try:
+        db.execute(text(f"""
+            UPDATE softswiss_games
+            SET {", ".join(sets)}
+            WHERE id=:game_id
+        """), params)
+        db.commit()
+        return {"ok": True, "updated": True}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/admin/softswiss/games/manual-seed")
+async def admin_softswiss_games_manual_seed(request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    body = await request.json()
+    games = body.get("games") or []
+    if not isinstance(games, list):
+        raise HTTPException(status_code=400, detail="games must be list")
+
+    db = SessionLocal()
+    try:
+        count = 0
+        for g in games:
+            provider_game_id = str(g.get("provider_game_id") or g.get("id") or "").strip()
+            title = str(g.get("title") or g.get("name") or provider_game_id).strip()
+            if not provider_game_id or not title:
+                continue
+
+            db.execute(text("""
+                INSERT INTO softswiss_games
+                (provider_game_id, title, category, image_url, is_enabled, is_featured, is_live, sort_order, raw_payload)
+                VALUES
+                (:provider_game_id, :title, :category, :image_url, :is_enabled, :is_featured, :is_live, :sort_order, CAST(:raw_payload AS jsonb))
+                ON CONFLICT (provider_game_id)
+                DO UPDATE SET
+                  title=EXCLUDED.title,
+                  category=EXCLUDED.category,
+                  image_url=EXCLUDED.image_url,
+                  raw_payload=EXCLUDED.raw_payload,
+                  updated_at=NOW()
+            """), {
+                "provider_game_id": provider_game_id,
+                "title": title,
+                "category": str(g.get("category") or "slots"),
+                "image_url": g.get("image_url"),
+                "is_enabled": bool(g.get("is_enabled", False)),
+                "is_featured": bool(g.get("is_featured", False)),
+                "is_live": bool(g.get("is_live", False)),
+                "sort_order": int(g.get("sort_order") or 0),
+                "raw_payload": json.dumps(g),
+            })
+            count += 1
+        db.commit()
+        return {"ok": True, "upserted": count}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+
+
+
+
+@app.post("/casino/softswiss/launch")
+async def public_softswiss_launch(request: Request):
+    body = await request.json()
+    user_id = str(body.get("user_id") or "player_001").strip()
+    game_id = str(body.get("game_id") or "").strip()
+    mode = str(body.get("mode") or "real").lower().strip()
+
+    if not game_id:
+        raise HTTPException(status_code=400, detail="game_id required")
+
+    db = SessionLocal()
+    try:
+        game = db.execute(text("""
+            SELECT provider_game_id, title, is_enabled
+            FROM softswiss_games
+            WHERE provider_game_id = :game_id
+            LIMIT 1
+        """), {"game_id": game_id}).mappings().first()
+
+        if not game:
+            raise HTTPException(status_code=404, detail="Game not found")
+        if not game["is_enabled"]:
+            raise HTTPException(status_code=403, detail="Game disabled")
+
+        session_payload = f"mock:{user_id}:{game_id}:{int(time.time())}"
+
+        db.execute(text("""
+            INSERT INTO softswiss_sessions
+            (session_payload, user_id, game_id, provider, currency, locale, jurisdiction, status)
+            VALUES
+            (:session_payload, :user_id, :game_id, 'softswiss', :currency, :locale, :jurisdiction, 'active')
+            ON CONFLICT (session_payload) DO NOTHING
+        """), {
+            "session_payload": session_payload,
+            "user_id": user_id,
+            "game_id": game_id,
+            "currency": SOFTSWISS_DEFAULT_CURRENCY,
+            "locale": SOFTSWISS_DEFAULT_LOCALE,
+            "jurisdiction": SOFTSWISS_DEFAULT_JURISDICTION,
+        })
+        db.commit()
+
+        # Mock-first launcher. Later this becomes the signed SOFTSWISS Launcher/Real call.
+        launch_url = f"/casino/mock-game?game_id={game_id}&session_payload={session_payload}&mode={mode}"
+
+        return {
+            "ok": True,
+            "mode": mode,
+            "game_id": game_id,
+            "title": game["title"],
+            "session_payload": session_payload,
+            "launch_url": launch_url,
+            "mock": True,
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"SoftSwiss launch failed: {str(e)}")
+    finally:
+        db.close()
+
+
+@app.get("/casino/softswiss/games")
+def public_softswiss_games(category: str | None = None, limit: int = 100):
+    safe_limit = max(1, min(int(limit or 100), 500))
+    db = SessionLocal()
+    try:
+        params = {"limit": safe_limit}
+        where = "WHERE is_enabled = true"
+
+        if category:
+            where += " AND category = :category"
+            params["category"] = str(category).strip()
+
+        rows = db.execute(text(f"""
+            SELECT provider_game_id, title, category, image_url,
+                   is_featured, is_live, sort_order
+            FROM softswiss_games
+            {where}
+            ORDER BY is_featured DESC, sort_order ASC, title ASC
+            LIMIT :limit
+        """), params).mappings().all()
+
+        return {
+            "ok": True,
+            "count": len(rows),
+            "games": [dict(r) for r in rows],
+        }
+    finally:
+        db.close()
+
+
 @app.get("/activity/wins")
 def public_activity_wins(limit: int = 20):
     db = SessionLocal()
     try:
         rows = (
             db.query(Transaction)
-            .filter(Transaction.type.in_(["dice_payout", "crash_payout"]))
+            .filter(Transaction.type.in_(["dice_payout", "crash_payout", "coinflip_payout", "mines_payout", "hilo_payout", "softswiss_win"]))
             .order_by(Transaction.id.desc())
             .limit(max(1, min(limit, 100)))
             .all()
@@ -3533,6 +4392,18 @@ def public_activity_wins(limit: int = 20):
             elif tx_type == "crash_payout":
                 game = "Crash"
                 event_type = "cashout"
+            elif tx_type == "coinflip_payout":
+                game = "Coinflip"
+                event_type = "win"
+            elif tx_type == "mines_payout":
+                game = "Mines"
+                event_type = "cashout"
+            elif tx_type == "hilo_payout":
+                game = "Hi-Lo"
+                event_type = "cashout"
+            elif tx_type == "softswiss_win":
+                game = "Casino"
+                event_type = "win"
             else:
                 continue
 
@@ -4548,9 +5419,9 @@ def admin_agent_dashboard(
                 created_at,
                 updated_at
             FROM billing_edges
-            WHERE parent_id = ANY(:ids) OR child_id = ANY(:ids)
+            WHERE parent_id = :viewer_id
             ORDER BY updated_at DESC NULLS LAST, id DESC
-        """), {"ids": ids}).mappings().all() if ids else []
+        """), {"viewer_id": viewer_id}).mappings().all() if ids else []
 
         return {
             "ok": True,
@@ -4866,9 +5737,9 @@ def admin_billing_summary(
                 created_at,
                 updated_at
             FROM billing_edges
-            WHERE parent_id = ANY(:ids) OR child_id = ANY(:ids)
+            WHERE parent_id = :viewer_id
             ORDER BY updated_at DESC NULLS LAST, id DESC
-        """), {"ids": ids}).mappings().all() if ids else []
+        """), {"viewer_id": viewer_id}).mappings().all() if ids else []
 
         runs_rows = db.execute(text("""
             SELECT
@@ -5751,6 +6622,204 @@ def update_billing_edge(payload: BillingEdgeUpdate, x_admin_key: str = Header(..
 
         db.commit()
         return {"ok": True}
+    finally:
+        db.close()
+
+
+# ==========================
+# PUBLIC / ADMIN BRAND CMS API
+# ==========================
+
+def _brand_row_to_dict(r):
+    if not r:
+        return None
+    return {
+        "id": r["id"],
+        "owner_user_id": r["owner_user_id"],
+        "brand_name": r["brand_name"],
+        "domain": r["domain"],
+        "logo_url": r["logo_url"],
+        "favicon_url": r["favicon_url"],
+        "primary_color": r["primary_color"],
+        "secondary_color": r["secondary_color"],
+        "support_email": r["support_email"],
+        "support_telegram": r["support_telegram"],
+        "is_active": bool(r["is_active"]) if r["is_active"] is not None else True,
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        "home_banners_json": r["home_banners_json"] or [],
+        "casino_banners_json": r["casino_banners_json"] or [],
+        "casino_lobby_json": r["casino_lobby_json"] or [],
+        "promotion_cards_json": r["promotion_cards_json"] or [],
+        "promotion_faq_json": r["promotion_faq_json"] or [],
+        "theme": r["theme"] or "default",
+    }
+
+
+@app.get("/api/public/brand-by-host")
+def api_public_brand_by_host(host: str = ""):
+    clean_host = str(host or "").strip().lower().split(":")[0]
+    if clean_host.startswith("www."):
+        clean_host = clean_host[4:]
+
+    db = SessionLocal()
+    try:
+        row = db.execute(text("""
+            SELECT *
+            FROM brand_domains
+            WHERE is_active = TRUE
+              AND LOWER(domain) IN (:host, :www_host)
+            ORDER BY id DESC
+            LIMIT 1
+        """), {
+            "host": clean_host,
+            "www_host": "www." + clean_host,
+        }).mappings().first()
+
+        if not row:
+            row = db.execute(text("""
+                SELECT *
+                FROM brand_domains
+                WHERE is_active = TRUE
+                ORDER BY id ASC
+                LIMIT 1
+            """)).mappings().first()
+
+        return {"ok": True, "brand": _brand_row_to_dict(row)}
+    finally:
+        db.close()
+
+
+@app.get("/api/admin/brands")
+def api_admin_brands(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+
+    db = SessionLocal()
+    try:
+        rows = db.execute(text("""
+            SELECT *
+            FROM brand_domains
+            ORDER BY id DESC
+        """)).mappings().all()
+
+        return {"ok": True, "brands": [_brand_row_to_dict(r) for r in rows]}
+    finally:
+        db.close()
+
+
+@app.post("/api/admin/brands")
+async def api_admin_create_brand(request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    body = await request.json()
+
+    db = SessionLocal()
+    try:
+        row = db.execute(text("""
+            INSERT INTO brand_domains (
+                owner_user_id, brand_name, domain,
+                logo_url, favicon_url,
+                primary_color, secondary_color,
+                support_email, support_telegram,
+                is_active,
+                home_banners_json, casino_banners_json, casino_lobby_json,
+                promotion_cards_json, promotion_faq_json,
+                theme
+            )
+            VALUES (
+                :owner_user_id, :brand_name, :domain,
+                :logo_url, :favicon_url,
+                :primary_color, :secondary_color,
+                :support_email, :support_telegram,
+                :is_active,
+                CAST(:home_banners_json AS jsonb),
+                CAST(:casino_banners_json AS jsonb),
+                CAST(:casino_lobby_json AS jsonb),
+                CAST(:promotion_cards_json AS jsonb),
+                CAST(:promotion_faq_json AS jsonb),
+                :theme
+            )
+            RETURNING *
+        """), {
+            "owner_user_id": str(body.get("owner_user_id") or "").strip(),
+            "brand_name": str(body.get("brand_name") or "").strip(),
+            "domain": str(body.get("domain") or "").strip().lower(),
+            "logo_url": body.get("logo_url"),
+            "favicon_url": body.get("favicon_url"),
+            "primary_color": body.get("primary_color"),
+            "secondary_color": body.get("secondary_color"),
+            "support_email": body.get("support_email"),
+            "support_telegram": body.get("support_telegram"),
+            "is_active": bool(body.get("is_active", True)),
+            "home_banners_json": json.dumps(body.get("home_banners_json") or []),
+            "casino_banners_json": json.dumps(body.get("casino_banners_json") or []),
+            "casino_lobby_json": json.dumps(body.get("casino_lobby_json") or []),
+            "promotion_cards_json": json.dumps(body.get("promotion_cards_json") or []),
+            "promotion_faq_json": json.dumps(body.get("promotion_faq_json") or []),
+            "theme": str(body.get("theme") or "default"),
+        }).mappings().first()
+
+        db.commit()
+        return {"ok": True, "brand": _brand_row_to_dict(row)}
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@app.post("/api/admin/brands/update/{brand_id}")
+async def api_admin_update_brand(brand_id: int, request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    body = await request.json()
+
+    allowed = {
+        "brand_name", "domain", "logo_url", "favicon_url",
+        "primary_color", "secondary_color",
+        "support_email", "support_telegram",
+        "is_active", "theme",
+    }
+    json_fields = {
+        "home_banners_json", "casino_banners_json", "casino_lobby_json",
+        "promotion_cards_json", "promotion_faq_json",
+    }
+
+    updates = {}
+    for k, v in body.items():
+        if k in allowed:
+            updates[k] = v
+        elif k in json_fields:
+            updates[k] = json.dumps(v or [])
+
+    if not updates:
+        return {"ok": False, "detail": "No valid fields to update"}
+
+    set_parts = []
+    params = {"brand_id": brand_id}
+
+    for k, v in updates.items():
+        if k in json_fields:
+            set_parts.append(f"{k} = CAST(:{k} AS jsonb)")
+        else:
+            set_parts.append(f"{k} = :{k}")
+        params[k] = v
+
+    db = SessionLocal()
+    try:
+        row = db.execute(text(f"""
+            UPDATE brand_domains
+            SET {", ".join(set_parts)}
+            WHERE id = :brand_id
+            RETURNING *
+        """), params).mappings().first()
+
+        db.commit()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Brand not found")
+
+        return {"ok": True, "brand": _brand_row_to_dict(row)}
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
