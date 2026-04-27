@@ -55,7 +55,20 @@ def run_global_billing(period_key: str):
                 subtree_ids = [child_id]
 
             sportsbook_ggr = 0.0
-            casino_ggr = 0.0
+
+            casino_ggr = conn.execute(text("""
+                SELECT COALESCE(-SUM(wallet_delta), 0)
+                FROM softswiss_transactions
+                WHERE user_id = ANY(:ids)
+                  AND status = 'processed'
+                  AND type IN ('bet', 'win', 'rollback')
+                  AND created_at >= :period_start
+                  AND created_at < :period_end
+            """), {
+                "ids": subtree_ids,
+                "period_start": period_start,
+                "period_end": period_end,
+            }).scalar() or 0
 
             dice_ggr = conn.execute(text("""
                 SELECT COALESCE(SUM(amount_usd - payout), 0)

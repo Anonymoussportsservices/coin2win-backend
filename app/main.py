@@ -4165,17 +4165,205 @@ def _mask_public_user(user_id: str) -> str:
 # SoftSwiss Backoffice / Games
 # --------------------------
 @app.get("/admin/softswiss/games")
-def admin_softswiss_games(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+def admin_softswiss_games(
+    q: str | None = None,
+    category: str | None = None,
+    status: str | None = None,
+    page: int = 1,
+    limit: int = 50,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
     _require_admin(x_admin_key)
+
+    safe_page = max(1, int(page or 1))
+    safe_limit = max(1, min(int(limit or 50), 200))
+    offset = (safe_page - 1) * safe_limit
+
+    where = ["1=1"]
+    params = {"limit": safe_limit, "offset": offset}
+
+    q = str(q or "").strip()
+    if q:
+        where.append("(title ILIKE :q OR provider_game_id ILIKE :q OR category ILIKE :q)")
+        params["q"] = f"%{q}%"
+
+    category = str(category or "").strip()
+    if category and category != "all":
+        where.append("category = :category")
+        params["category"] = category
+
+    status = str(status or "").strip().lower()
+    if status == "enabled":
+        where.append("is_enabled = TRUE")
+    elif status == "disabled":
+        where.append("is_enabled = FALSE")
+    elif status == "featured":
+        where.append("is_featured = TRUE")
+    elif status == "live":
+        where.append("is_live = TRUE")
+    elif status == "missing-thumbnail":
+        where.append("(image_url IS NULL OR image_url = '')")
+
+    where_sql = " AND ".join(where)
+
     db = SessionLocal()
     try:
-        rows = db.execute(text("""
+        total = db.execute(text(f"""
+            SELECT COUNT(*)
+            FROM softswiss_games
+            WHERE {where_sql}
+        """), params).scalar() or 0
+
+        rows = db.execute(text(f"""
             SELECT id, provider_game_id, title, category, image_url,
                    is_enabled, is_featured, is_live, sort_order, created_at, updated_at
             FROM softswiss_games
-            ORDER BY sort_order ASC, title ASC
-        """)).mappings().all()
-        return {"ok": True, "count": len(rows), "games": [dict(r) for r in rows]}
+            WHERE {where_sql}
+            ORDER BY is_featured DESC, sort_order ASC, title ASC, id DESC
+            LIMIT :limit OFFSET :offset
+        """), params).mappings().all()
+
+        return {
+            "ok": True,
+            "count": len(rows),
+            "total": int(total or 0),
+            "page": safe_page,
+            "limit": safe_limit,
+            "pages": int(((int(total or 0) + safe_limit - 1) // safe_limit) or 1),
+            "games": [dict(r) for r in rows],
+        }
+    finally:
+        db.close()
+
+
+
+
+
+
+@app.post("/admin/softswiss/games/bulk-update-filtered")
+async def admin_softswiss_games_bulk_update_filtered(request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    body = await request.json()
+
+    q = str(body.get("q") or "").strip()
+    category = str(body.get("category") or "").strip()
+    status = str(body.get("status") or "").strip().lower()
+    dry_run = bool(body.get("dry_run", False))
+
+    allowed = {
+        "category": body.get("set_category"),
+        "is_enabled": body.get("is_enabled"),
+        "is_featured": body.get("is_featured"),
+        "is_live": body.get("is_live"),
+    }
+    allowed = {k: v for k, v in allowed.items() if v is not None}
+
+    if not dry_run and not allowed:
+        raise HTTPException(status_code=400, detail="no supported bulk fields provided")
+
+    where = ["1=1"]
+    params = {}
+
+    if q:
+        where.append("(title ILIKE :q OR provider_game_id ILIKE :q OR category ILIKE :q)")
+        params["q"] = f"%{q}%"
+
+    if category and category != "all":
+        where.append("category = :category_filter")
+        params["category_filter"] = category
+
+    if status == "enabled":
+        where.append("is_enabled = TRUE")
+    elif status == "disabled":
+        where.append("is_enabled = FALSE")
+    elif status == "featured":
+        where.append("is_featured = TRUE")
+    elif status == "live":
+        where.append("is_live = TRUE")
+    elif status == "missing-thumbnail":
+        where.append("(image_url IS NULL OR image_url = '')")
+
+    where_sql = " AND ".join(where)
+
+    db = SessionLocal()
+    try:
+        total = db.execute(text(f"""
+            SELECT COUNT(*)
+            FROM softswiss_games
+            WHERE {where_sql}
+        """), params).scalar() or 0
+
+        if dry_run:
+            return {"ok": True, "dry_run": True, "matched": int(total or 0)}
+
+        if int(total or 0) <= 0:
+            return {"ok": True, "updated": 0, "matched": 0}
+
+        sets = []
+        update_params = dict(params)
+        for k, v in allowed.items():
+            sets.append(f"{k}=:{k}")
+            update_params[k] = v
+        sets.append("updated_at=NOW()")
+
+        result = db.execute(text(f"""
+            UPDATE softswiss_games
+            SET {", ".join(sets)}
+            WHERE {where_sql}
+        """), update_params)
+
+        db.commit()
+        return {"ok": True, "matched": int(total or 0), "updated": int(result.rowcount or 0)}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/admin/softswiss/games/bulk-update")
+async def admin_softswiss_games_bulk_update(request: Request, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+    body = await request.json()
+
+    ids = body.get("ids") or []
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status_code=400, detail="ids must be non-empty list")
+
+    ids = [int(x) for x in ids if str(x).strip().isdigit()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="valid ids required")
+
+    allowed = {
+        "category": body.get("category"),
+        "is_enabled": body.get("is_enabled"),
+        "is_featured": body.get("is_featured"),
+        "is_live": body.get("is_live"),
+    }
+    allowed = {k: v for k, v in allowed.items() if v is not None}
+
+    if not allowed:
+        raise HTTPException(status_code=400, detail="no supported bulk fields provided")
+
+    sets = []
+    params = {"ids": ids}
+    for k, v in allowed.items():
+        sets.append(f"{k}=:{k}")
+        params[k] = v
+    sets.append("updated_at=NOW()")
+
+    db = SessionLocal()
+    try:
+        result = db.execute(text(f"""
+            UPDATE softswiss_games
+            SET {", ".join(sets)}
+            WHERE id = ANY(:ids)
+        """), params)
+        db.commit()
+        return {"ok": True, "updated": int(result.rowcount or 0)}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
 
@@ -4215,6 +4403,134 @@ async def admin_softswiss_game_update(game_id: int, request: Request, x_admin_ke
         """), params)
         db.commit()
         return {"ok": True, "updated": True}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+
+
+@app.post("/admin/softswiss/games/sync")
+async def admin_softswiss_games_sync(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+    _require_admin(x_admin_key)
+
+    if not SOFTSWISS_ENABLED:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "SOFTSWISS_ENABLED=false",
+            "upserted": 0,
+        }
+
+    if not SOFTSWISS_BASE_URL or not SOFTSWISS_CASINO_ID or not SOFTSWISS_AUTH_TOKEN:
+        raise HTTPException(status_code=500, detail="SoftSwiss config missing")
+
+    payload = {
+        "casino_id": SOFTSWISS_CASINO_ID,
+    }
+
+    raw_body = _softswiss_compact_json(payload)
+    signature = _softswiss_sign_body(raw_body)
+
+    try:
+        res = requests.post(
+            f"{SOFTSWISS_BASE_URL}/v2/casino_a8r.Game/List",
+            data=raw_body,
+            headers={
+                "Content-Type": "application/json",
+                "X-REQUEST-SIGN": signature,
+            },
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"SoftSwiss Game/List request failed: {str(e)}")
+
+    try:
+        data = res.json()
+    except Exception:
+        data = {"raw": res.text}
+
+    if res.status_code >= 400:
+        raise HTTPException(status_code=502, detail={
+            "message": "SoftSwiss Game/List rejected",
+            "status": res.status_code,
+            "response": data,
+        })
+
+    raw_games = data.get("games") or data.get("items") or data.get("data") or []
+    if isinstance(raw_games, dict):
+        raw_games = raw_games.get("games") or raw_games.get("items") or []
+
+    if not isinstance(raw_games, list):
+        raise HTTPException(status_code=502, detail={
+            "message": "SoftSwiss Game/List response has no games list",
+            "response": data,
+        })
+
+    db = SessionLocal()
+    try:
+        count = 0
+        for g in raw_games:
+            if not isinstance(g, dict):
+                continue
+
+            provider_game_id = str(
+                g.get("id")
+                or g.get("identifier")
+                or g.get("game_id")
+                or g.get("provider_game_id")
+                or ""
+            ).strip()
+
+            title = str(g.get("title") or g.get("name") or provider_game_id).strip()
+            if not provider_game_id or not title:
+                continue
+
+            raw_category = str(g.get("category") or g.get("type") or "").strip().lower()
+            is_live = bool(g.get("is_live") or raw_category in ("live", "live-casino", "live_casino"))
+            category = "live" if is_live else (raw_category or "slots")
+            if category in ("slot", "video_slots", "video-slots"):
+                category = "slots"
+
+            image_url = (
+                g.get("image_url")
+                or g.get("image")
+                or g.get("thumbnail")
+                or g.get("icon")
+                or ""
+            )
+
+            db.execute(text("""
+                INSERT INTO softswiss_games
+                (provider_game_id, title, category, image_url, image_status, image_note, is_enabled, is_featured, is_live, sort_order, raw_payload)
+                VALUES
+                (:provider_game_id, :title, :category, :image_url, :image_status, :image_note, FALSE, FALSE, :is_live, 0, CAST(:raw_payload AS jsonb))
+                ON CONFLICT (provider_game_id)
+                DO UPDATE SET
+                  title=EXCLUDED.title,
+                  category=EXCLUDED.category,
+                  image_url=COALESCE(NULLIF(EXCLUDED.image_url, ''), softswiss_games.image_url),
+                  image_status=EXCLUDED.image_status,
+                  image_note=EXCLUDED.image_note,
+                  is_live=EXCLUDED.is_live,
+                  raw_payload=EXCLUDED.raw_payload,
+                  updated_at=NOW()
+            """), {
+                "provider_game_id": provider_game_id,
+                "title": title,
+                "category": category,
+                "image_url": image_url,
+                "image_status": "provider" if str(image_url or "").strip() else "missing",
+                "image_note": "Provider/remote image" if str(image_url or "").strip() else "No thumbnail URL from provider",
+                "is_live": is_live,
+                "raw_payload": json.dumps(g),
+            })
+            count += 1
+
+        db.commit()
+        return {"ok": True, "skipped": False, "upserted": count}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -4318,8 +4634,59 @@ async def public_softswiss_launch(request: Request):
         })
         db.commit()
 
-        # Mock-first launcher. Later this becomes the signed SOFTSWISS Launcher/Real call.
-        launch_url = f"/casino/mock-game?game_id={game_id}&session_payload={session_payload}&mode={mode}"
+        if not SOFTSWISS_ENABLED:
+            launch_url = f"/casino/mock-game?game_id={game_id}&session_payload={session_payload}&mode={mode}"
+            return {
+                "ok": True,
+                "mode": mode,
+                "game_id": game_id,
+                "title": game["title"],
+                "session_payload": session_payload,
+                "launch_url": launch_url,
+                "mock": True,
+            }
+
+        if not SOFTSWISS_BASE_URL or not SOFTSWISS_CASINO_ID or not SOFTSWISS_AUTH_TOKEN:
+            raise HTTPException(status_code=500, detail="SoftSwiss real launcher config missing")
+
+        launch_payload = {
+            "casino_id": SOFTSWISS_CASINO_ID,
+            "game": game_id,
+            "player": {
+                "id": user_id,
+                "currency": SOFTSWISS_DEFAULT_CURRENCY,
+            },
+            "session_payload": session_payload,
+            "locale": SOFTSWISS_DEFAULT_LOCALE,
+            "jurisdiction": SOFTSWISS_DEFAULT_JURISDICTION,
+            "return_url": SOFTSWISS_RETURN_URL,
+            "deposit_url": SOFTSWISS_DEPOSIT_URL,
+        }
+
+        raw_body = _softswiss_compact_json(launch_payload)
+        signature = _softswiss_sign_body(raw_body)
+
+        res = requests.post(
+            f"{SOFTSWISS_BASE_URL}/v2/casino_a8r.Game/Launcher/Real",
+            data=raw_body,
+            headers={
+                "Content-Type": "application/json",
+                "X-REQUEST-SIGN": signature,
+            },
+            timeout=15,
+        )
+
+        try:
+            data = res.json()
+        except Exception:
+            data = {"raw": res.text}
+
+        if res.status_code >= 400:
+            raise HTTPException(status_code=502, detail={"message": "SoftSwiss launcher rejected", "status": res.status_code, "response": data})
+
+        launch_url = data.get("launch_url") or data.get("url") or data.get("game_url")
+        if not launch_url:
+            raise HTTPException(status_code=502, detail={"message": "SoftSwiss launcher response missing URL", "response": data})
 
         return {
             "ok": True,
@@ -4328,7 +4695,8 @@ async def public_softswiss_launch(request: Request):
             "title": game["title"],
             "session_payload": session_payload,
             "launch_url": launch_url,
-            "mock": True,
+            "mock": False,
+            "provider_response": data,
         }
     except HTTPException:
         db.rollback()
@@ -5389,6 +5757,14 @@ def admin_agent_dashboard(
             WHERE user_id = ANY(:ids)
         """), {"ids": ids}).scalar() if ids else 0
 
+        softswiss_casino_ggr = db.execute(text("""
+            SELECT COALESCE(-SUM(wallet_delta), 0)
+            FROM softswiss_transactions
+            WHERE user_id = ANY(:ids)
+              AND status = 'processed'
+              AND type IN ('bet', 'win', 'rollback')
+        """), {"ids": ids}).scalar() if ids else 0
+
         billing_history_rows = db.execute(text("""
             SELECT
                 id,
@@ -5442,12 +5818,12 @@ def admin_agent_dashboard(
                 "balance_available": float((wallet_row or {}).get("balance_available") or 0),
                 "active_players": int(active_players or 0),
                 "downline_count": max(len(ids) - 1, 0),
-                "ggr": float((crash_ggr or 0) + (global_crash_ggr or 0) + (dice_ggr or 0)),
+                "ggr": float((crash_ggr or 0) + (global_crash_ggr or 0) + (dice_ggr or 0) + (softswiss_casino_ggr or 0)),
                 "ggr_breakdown": {
                     "crash": float(crash_ggr or 0),
                     "global_crash": float(global_crash_ggr or 0),
                     "dice": float(dice_ggr or 0),
-                    "casino_aggregator": 0.0,
+                    "casino_aggregator": float(softswiss_casino_ggr or 0),
                     "sportsbook": 0.0,
                 },
                 "activity_window_days": days,
@@ -5962,6 +6338,14 @@ def _dashboard_summary(db, scoped_ids=None, viewer_id=None):
         if scoped_ids: q = q.filter(q.column_descriptions[0]["entity"].user_id.in_(scoped_ids))
         active.update([x[0] for x in q.distinct().all() if x[0]])
 
+    vendor_casino_total = db.execute(text("""
+        SELECT COALESCE(-SUM(wallet_delta), 0)
+        FROM softswiss_transactions
+        WHERE status = 'processed'
+          AND type IN ('bet', 'win', 'rollback')
+    """)).scalar() or 0
+    vendor_casino_total = float(vendor_casino_total or 0)
+
     return {
         "deposits": {
             "today": dep_today,
@@ -5980,13 +6364,13 @@ def _dashboard_summary(db, scoped_ids=None, viewer_id=None):
             "net_today": round(dep_today - completed_today,2)
         },
         "ggr": {
-            "total_platform_ggr": originals_total,
+            "total_platform_ggr": originals_total + vendor_casino_total,
             "originals_total": originals_total,
             "sportsbook_total": 0.0,
-            "vendor_casino_total": 0.0,
+            "vendor_casino_total": vendor_casino_total,
             "originals_breakdown": breakdown
         },
-        "player_performance": {"top_winners": top_winners, "top_losers": top_losers},
+        "player_performance": {"top_winners": locals().get("top_winners", []), "top_losers": locals().get("top_losers", [])},
             "players": {
             "active_24h": len(active)
         }
@@ -6168,7 +6552,7 @@ def _dashboard_summary_range(db, scoped_ids=None, viewer_id=None, range_key="tod
             "vendor_casino_total": 0.0,
             "originals_breakdown": breakdown
         },
-        "player_performance": {"top_winners": top_winners, "top_losers": top_losers},
+        "player_performance": {"top_winners": locals().get("top_winners", []), "top_losers": locals().get("top_losers", [])},
             "players": {
             "active": len(active)
         }
