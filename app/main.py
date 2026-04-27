@@ -1,3 +1,4 @@
+import uuid
 import os
 import hmac
 import hashlib
@@ -209,6 +210,36 @@ def _softswiss_money(value) -> float:
         return _round2(float(value or 0))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid amount")
+
+
+def _validate_softswiss_session(db, user_id: str, session_payload: str):
+    session_payload = str(session_payload or "").strip()
+    user_id = str(user_id or "").strip()
+
+    # Local/mock tests used empty session_payload before real launcher.
+    # In production mode, require a real session payload.
+    if not session_payload:
+        if SOFTSWISS_ENABLED:
+            raise HTTPException(status_code=400, detail="session_payload required")
+        return None
+
+    sess = db.execute(text("""
+        SELECT id, user_id, game_id, status
+        FROM softswiss_sessions
+        WHERE session_payload = :session_payload
+        LIMIT 1
+    """), {"session_payload": session_payload}).mappings().first()
+
+    if not sess:
+        raise HTTPException(status_code=400, detail="Invalid session_payload")
+
+    if str(sess["user_id"]) != str(user_id):
+        raise HTTPException(status_code=400, detail="session_payload user mismatch")
+
+    if str(sess["status"] or "").lower() != "active":
+        raise HTTPException(status_code=400, detail="session is not active")
+
+    return sess
 
 
 if not NOWPAYMENTS_API_KEY:
@@ -468,13 +499,7 @@ async def softswiss_player_balance(request: Request, x_request_sign: str | None 
         _get_or_create_user_and_wallet(db, user_id)
         wallet = db.query(Wallet).filter(Wallet.user_id == user_id).one()
 
-        if session_payload:
-            sess = db.execute(
-                text("SELECT id FROM softswiss_sessions WHERE session_payload=:sp AND user_id=:uid LIMIT 1"),
-                {"sp": session_payload, "uid": user_id},
-            ).fetchone()
-            if not sess:
-                raise HTTPException(status_code=400, detail="Invalid session_payload")
+        _validate_softswiss_session(db, user_id, session_payload)
 
         return {
             "balance": _round2(float(wallet.balance_available or 0)),
@@ -510,6 +535,7 @@ async def softswiss_round_betwin(request: Request, x_request_sign: str | None = 
     db = SessionLocal()
     try:
         _get_or_create_user_and_wallet(db, user_id)
+        _validate_softswiss_session(db, user_id, session_payload)
         wallet = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
 
         if round_id:
@@ -658,6 +684,7 @@ async def softswiss_round_rollback(request: Request, x_request_sign: str | None 
     db = SessionLocal()
     try:
         _get_or_create_user_and_wallet(db, user_id)
+        _validate_softswiss_session(db, user_id, session_payload)
         wallet = db.query(Wallet).filter(Wallet.user_id == user_id).with_for_update().one()
 
         responses = []
@@ -817,6 +844,7 @@ async def softswiss_round_finish(request: Request, x_request_sign: str | None = 
 
     db = SessionLocal()
     try:
+        _validate_softswiss_session(db, user_id, session_payload)
         db.execute(text("""
             INSERT INTO softswiss_rounds (provider, round_id, user_id, game_id, session_payload, status)
             VALUES ('softswiss', :round_id, :user_id, :game_id, :session_payload, 'closed')
@@ -4593,12 +4621,21 @@ async def admin_softswiss_games_manual_seed(request: Request, x_admin_key: str |
 
 
 @app.post("/casino/softswiss/launch")
-async def public_softswiss_launch(request: Request):
+async def public_softswiss_launch(
+    request: Request,
+    x_internal_launch_key: str | None = Header(default=None, alias="X-Internal-Launch-Key"),
+):
+    expected_launch_key = os.getenv("SOFTSWISS_LAUNCH_INTERNAL_KEY", ADMIN_KEY).strip()
+    if expected_launch_key and str(x_internal_launch_key or "").strip() != expected_launch_key:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
     body = await request.json()
-    user_id = str(body.get("user_id") or "player_001").strip()
+    user_id = str(body.get("user_id") or "").strip()
     game_id = str(body.get("game_id") or "").strip()
     mode = str(body.get("mode") or "real").lower().strip()
 
+    if not user_id:
+        raise HTTPException(status_code=401, detail="authenticated user required")
     if not game_id:
         raise HTTPException(status_code=400, detail="game_id required")
 
@@ -4616,7 +4653,7 @@ async def public_softswiss_launch(request: Request):
         if not game["is_enabled"]:
             raise HTTPException(status_code=403, detail="Game disabled")
 
-        session_payload = f"mock:{user_id}:{game_id}:{int(time.time())}"
+        session_payload = str(uuid.uuid4())
 
         db.execute(text("""
             INSERT INTO softswiss_sessions
@@ -4696,7 +4733,6 @@ async def public_softswiss_launch(request: Request):
             "session_payload": session_payload,
             "launch_url": launch_url,
             "mock": False,
-            "provider_response": data,
         }
     except HTTPException:
         db.rollback()
@@ -6591,7 +6627,6 @@ def agent_dashboard_summary_range(
 
 from pydantic import BaseModel, EmailStr
 from app.auth_routes import hash_password
-import uuid
 
 class AdminCreateUserBody(BaseModel):
     viewer_id: str
