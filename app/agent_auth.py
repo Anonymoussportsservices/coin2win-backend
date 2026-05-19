@@ -82,21 +82,48 @@ def agent_login(body: AgentLoginBody, request: Request):
 from passlib.context import CryptContext
 pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
-@router.post("/agent/change-password")
-def change_password(body: dict):
-    user_id = body.get("user_id")
-    new_password = body.get("new_password")
+class AgentChangePasswordBody(BaseModel):
+    email: str
+    current_password: str
+    new_password: str
 
-    if not user_id or not new_password:
+@router.post("/agent/auth/change-password")
+def change_password(body: AgentChangePasswordBody):
+    email = body.email.strip().lower()
+    current_password = body.current_password
+    new_password = body.new_password.strip()
+
+    if not email or not current_password or not new_password:
         raise HTTPException(status_code=400, detail="Missing fields")
 
-    hashed = pwd.hash(new_password)
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
 
     with engine.begin() as conn:
+        row = conn.execute(text("""
+            SELECT u.id, u.role, cu.password_hash
+            FROM users u
+            INNER JOIN c2w_users cu ON cu.user_id = u.id
+            WHERE lower(cu.email) = :email
+            LIMIT 1
+        """), {"email": email}).mappings().first()
+
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        if str(row.get("role") or "").strip().lower() == "player":
+            raise HTTPException(status_code=403, detail="Not an agent")
+
+        if not pwd.verify(current_password, row["password_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
         conn.execute(text("""
             UPDATE c2w_users
-            SET password_hash = :h
-            WHERE user_id = :u
-        """), {"h": hashed, "u": user_id})
+            SET password_hash = :password_hash
+            WHERE user_id = :user_id
+        """), {
+            "password_hash": pwd.hash(new_password),
+            "user_id": row["id"],
+        })
 
-    return {"ok": True}
+    return {"ok": True, "message": "Password updated"}

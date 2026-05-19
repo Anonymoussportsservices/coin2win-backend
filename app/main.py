@@ -2376,13 +2376,22 @@ def deposit_list_user(user_id: str, limit: int = 20):
 
 
 @app.get("/admin/deposits")
-def admin_deposits(limit: int = 50, x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")):
+def admin_deposits(
+    limit: int = 50,
+    viewer_id: str | None = None,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
     _require_admin(x_admin_key)
     db = SessionLocal()
     try:
+        scoped_ids = _scoped_user_ids(db, viewer_id) if viewer_id else None
+        q = db.query(Deposit)
+
+        if scoped_ids is not None:
+            q = q.filter(Deposit.user_id.in_(scoped_ids))
+
         rows = (
-            db.query(Deposit)
-            .order_by(Deposit.id.desc())
+            q.order_by(Deposit.id.desc())
             .limit(max(1, min(limit, 200)))
             .all()
         )
@@ -5854,7 +5863,7 @@ def admin_agent_dashboard(
                 "balance_available": float((wallet_row or {}).get("balance_available") or 0),
                 "active_players": int(active_players or 0),
                 "downline_count": max(len(ids) - 1, 0),
-                "ggr": float((crash_ggr or 0) + (global_crash_ggr or 0) + (dice_ggr or 0) + (softswiss_casino_ggr or 0)),
+                "ggr": float(crash_ggr or 0) + float(global_crash_ggr or 0) + float(dice_ggr or 0) + float(softswiss_casino_ggr or 0),
                 "ggr_breakdown": {
                     "crash": float(crash_ggr or 0),
                     "global_crash": float(global_crash_ggr or 0),
@@ -5909,6 +5918,179 @@ def admin_agent_dashboard(
         }
     finally:
         db.close()
+
+
+
+@app.get("/admin/agent-money-center/{viewer_id}")
+def admin_agent_money_center(
+    viewer_id: str,
+    period: str = "30d",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        _enforce_hierarchy_scope(db, viewer_id, viewer_id)
+        tree = _get_subtree_rows(db, viewer_id)
+        ids = [str(r["id"]) for r in tree if r.get("id")]
+        player_ids = [
+            str(r["id"])
+            for r in tree
+            if str(r.get("role") or "").strip().lower() == "player"
+        ]
+
+        now = datetime.utcnow()
+        start_dt = None
+        end_dt = now
+
+        p = str(period or "30d").lower()
+        if p == "today":
+            start_dt = datetime(now.year, now.month, now.day)
+        elif p == "7d":
+            start_dt = now - timedelta(days=7)
+        elif p == "30d":
+            start_dt = now - timedelta(days=30)
+        elif p == "custom":
+            if start_date:
+                start_dt = datetime.fromisoformat(f"{start_date}T00:00:00")
+            if end_date:
+                end_dt = datetime.fromisoformat(f"{end_date}T23:59:59.999999")
+        else:
+            start_dt = now - timedelta(days=30)
+
+        def date_sql(alias="created_at"):
+            clauses = []
+            params = {}
+            if start_dt:
+                clauses.append(f"{alias} >= :start_dt")
+                params["start_dt"] = start_dt
+            if end_dt:
+                clauses.append(f"{alias} <= :end_dt")
+                params["end_dt"] = end_dt
+            return clauses, params
+
+        dep_clauses, dep_params = date_sql("created_at")
+        wd_clauses, wd_params = date_sql("created_at")
+
+        dep_where = "user_id = ANY(:player_ids)"
+        wd_where = "user_id = ANY(:player_ids)"
+        if dep_clauses:
+            dep_where += " AND " + " AND ".join(dep_clauses)
+        if wd_clauses:
+            wd_where += " AND " + " AND ".join(wd_clauses)
+
+        dep_rows = db.execute(text(f"""
+            SELECT user_id, status, COUNT(*) AS count, COALESCE(SUM(amount_usd), 0) AS amount
+            FROM deposits
+            WHERE {dep_where}
+            GROUP BY user_id, status
+        """), {"player_ids": player_ids, **dep_params}).mappings().all() if player_ids else []
+
+        wd_rows = db.execute(text(f"""
+            SELECT user_id, status, COUNT(*) AS count, COALESCE(SUM(amount_usd), 0) AS amount
+            FROM withdrawals
+            WHERE {wd_where}
+            GROUP BY user_id, status
+        """), {"player_ids": player_ids, **wd_params}).mappings().all() if player_ids else []
+
+        parent_by_id = {str(r["id"]): str(r.get("parent_id") or "") for r in tree if r.get("id")}
+        role_by_id = {str(r["id"]): str(r.get("role") or "") for r in tree if r.get("id")}
+        direct_children = [str(r["id"]) for r in tree if str(r.get("parent_id") or "") == viewer_id]
+
+        def top_bucket(user_id: str):
+            cur = str(user_id)
+            seen = set()
+            last = cur
+            while cur and cur not in seen:
+                seen.add(cur)
+                parent = parent_by_id.get(cur, "")
+                if parent == viewer_id:
+                    return cur
+                last = cur
+                cur = parent
+            return last if last != viewer_id else viewer_id
+
+        buckets = {}
+
+        def ensure_bucket(bucket_id):
+            if bucket_id not in buckets:
+                buckets[bucket_id] = {
+                    "id": bucket_id,
+                    "role": role_by_id.get(bucket_id, "player"),
+                    "deposit_amount": 0.0,
+                    "deposit_count": 0,
+                    "withdrawal_amount": 0.0,
+                    "withdrawal_count": 0,
+                    "net_flow": 0.0,
+                }
+            return buckets[bucket_id]
+
+        total_deposit_amount = 0.0
+        total_deposit_count = 0
+        total_withdrawal_amount = 0.0
+        total_withdrawal_count = 0
+
+        for r in dep_rows:
+            amt = float(r["amount"] or 0)
+            cnt = int(r["count"] or 0)
+            total_deposit_amount += amt
+            total_deposit_count += cnt
+            b = ensure_bucket(top_bucket(str(r["user_id"])))
+            b["deposit_amount"] += amt
+            b["deposit_count"] += cnt
+
+        for r in wd_rows:
+            amt = float(r["amount"] or 0)
+            cnt = int(r["count"] or 0)
+            total_withdrawal_amount += amt
+            total_withdrawal_count += cnt
+            b = ensure_bucket(top_bucket(str(r["user_id"])))
+            b["withdrawal_amount"] += amt
+            b["withdrawal_count"] += cnt
+
+        for b in buckets.values():
+            b["net_flow"] = round(float(b["deposit_amount"] - b["withdrawal_amount"]), 2)
+
+        breakdown = sorted(
+            buckets.values(),
+            key=lambda x: abs(float(x["net_flow"])),
+            reverse=True,
+        )
+
+        net_flow = round(total_deposit_amount - total_withdrawal_amount, 2)
+        alerts = []
+        if total_withdrawal_amount > total_deposit_amount:
+            alerts.append({
+                "level": "warning",
+                "message": "Withdrawals are higher than deposits for this period.",
+            })
+        if total_deposit_amount > 0 and total_withdrawal_amount >= total_deposit_amount * 0.8:
+            alerts.append({
+                "level": "info",
+                "message": "Withdrawal volume is near deposit volume.",
+            })
+
+        return {
+            "ok": True,
+            "viewer_id": viewer_id,
+            "period": period,
+            "start_date": start_dt.isoformat() if start_dt else None,
+            "end_date": end_dt.isoformat() if end_dt else None,
+            "summary": {
+                "deposit_amount": round(total_deposit_amount, 2),
+                "deposit_count": total_deposit_count,
+                "withdrawal_amount": round(total_withdrawal_amount, 2),
+                "withdrawal_count": total_withdrawal_count,
+                "net_flow": net_flow,
+            },
+            "alerts": alerts,
+            "breakdown": breakdown,
+        }
+    finally:
+        db.close()
+
 
 
 
@@ -7380,6 +7562,465 @@ async def admin_reset_user_password(
     except HTTPException:
         db.rollback()
         raise
+    finally:
+        db.close()
+
+
+@app.get("/admin/agent-money-center/{viewer_id}/drilldown/{agent_id}")
+def agent_money_center_drilldown(
+    viewer_id: str,
+    agent_id: str,
+    period: str = "30d",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    _require_admin(x_admin_key)
+
+    db = SessionLocal()
+    try:
+        _enforce_hierarchy_scope(db, viewer_id, agent_id)
+
+        tree = _get_subtree_rows(db, agent_id)
+        player_ids = [
+            str(r["id"])
+            for r in tree
+            if str(r.get("role") or "").lower() == "player"
+        ]
+
+        if not player_ids:
+            return {"ok": True, "players": []}
+
+        now = datetime.utcnow()
+        start_dt = None
+        end_dt = now
+        p = str(period or "30d").lower()
+
+        if p == "today":
+            start_dt = datetime(now.year, now.month, now.day)
+        elif p == "7d":
+            start_dt = now - timedelta(days=7)
+        elif p == "30d":
+            start_dt = now - timedelta(days=30)
+        elif p == "custom":
+            if start_date:
+                start_dt = datetime.fromisoformat(f"{start_date}T00:00:00")
+            if end_date:
+                end_dt = datetime.fromisoformat(f"{end_date}T23:59:59.999999")
+
+        date_filter = ""
+        date_params = {}
+        if start_dt:
+            date_filter += " AND created_at >= :start_dt"
+            date_params["start_dt"] = start_dt
+        if end_dt:
+            date_filter += " AND created_at <= :end_dt"
+            date_params["end_dt"] = end_dt
+
+        deposits_sql = """
+            SELECT user_id, COALESCE(SUM(amount_usd),0) AS deposit_amount, COUNT(*) AS deposit_count
+            FROM deposits
+            WHERE user_id = ANY(:ids)
+        """ + date_filter + """
+            GROUP BY user_id
+        """
+
+        withdrawals_sql = """
+            SELECT user_id, COALESCE(SUM(amount_usd),0) AS withdrawal_amount, COUNT(*) AS withdrawal_count
+            FROM withdrawals
+            WHERE user_id = ANY(:ids)
+        """ + date_filter + """
+            GROUP BY user_id
+        """
+
+        deposits = db.execute(text(deposits_sql), {"ids": player_ids, **date_params}).mappings().all()
+        withdrawals = db.execute(text(withdrawals_sql), {"ids": player_ids, **date_params}).mappings().all()
+
+        dmap = {r["user_id"]: r for r in deposits}
+        wmap = {r["user_id"]: r for r in withdrawals}
+
+        players = []
+        for pid in player_ids:
+            d = dmap.get(pid, {})
+            w = wmap.get(pid, {})
+
+            dep = float(d.get("deposit_amount") or 0)
+            wd = float(w.get("withdrawal_amount") or 0)
+
+            players.append({
+                "user_id": pid,
+                "deposit_amount": dep,
+                "deposit_count": int(d.get("deposit_count") or 0),
+                "withdrawal_amount": wd,
+                "withdrawal_count": int(w.get("withdrawal_count") or 0),
+                "net_flow": dep - wd,
+            })
+
+        players.sort(key=lambda x: x["net_flow"])
+
+        return {
+            "ok": True,
+            "agent_id": agent_id,
+            "players": players[:50],
+        }
+
+    finally:
+        db.close()
+
+
+@app.post("/admin/crm/bulk-bonus/{viewer_id}")
+async def admin_crm_bulk_bonus(
+    viewer_id: str,
+    request: Request,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        body = await request.json()
+        user_ids = [str(x).strip() for x in body.get("user_ids", []) if str(x).strip()]
+        amount = float(body.get("amount", 0) or 0)
+        segment = str(body.get("segment", "crm") or "crm").strip()
+        actor_id = str(body.get("actor_id", viewer_id) or viewer_id).strip()
+        duplicate_window = str(body.get("duplicate_window", "today") or "today").strip().lower()
+
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="amount must be > 0")
+        if not user_ids:
+            raise HTTPException(status_code=400, detail="No users selected")
+
+        tree = _get_subtree_rows(db, viewer_id)
+        allowed_ids = {str(r["id"]) for r in tree if r.get("id")}
+        targets = [uid for uid in user_ids if uid in allowed_ids]
+
+        if not targets:
+            raise HTTPException(status_code=403, detail="No selected users are in viewer scope")
+
+        reference = f"crm_bulk_bonus_{segment}:{actor_id}"
+
+        duplicate_sql = ""
+        if duplicate_window == "today":
+            duplicate_sql = "AND created_at >= date_trunc('day', NOW())"
+        elif duplicate_window == "24h":
+            duplicate_sql = "AND created_at >= NOW() - INTERVAL '24 hours'"
+        elif duplicate_window == "7d":
+            duplicate_sql = "AND created_at >= NOW() - INTERVAL '7 days'"
+        elif duplicate_window == "off":
+            duplicate_sql = ""
+        else:
+            duplicate_sql = "AND created_at >= date_trunc('day', NOW())"
+
+        success = 0
+        skipped = 0
+        failed = 0
+        results = []
+
+        for uid in targets:
+            try:
+                if duplicate_sql:
+                    existing = db.execute(text(f"""
+                        SELECT id
+                        FROM transactions
+                        WHERE user_id = :uid
+                          AND reference = :reference
+                          {duplicate_sql}
+                        LIMIT 1
+                    """), {"uid": uid, "reference": reference}).mappings().first()
+                    if existing:
+                        skipped += 1
+                        results.append({"user_id": uid, "status": "skipped_duplicate"})
+                        continue
+
+                _get_or_create_user_and_wallet(db, uid)
+                wallet = db.query(Wallet).filter(Wallet.user_id == uid).with_for_update().one()
+
+                wallet.balance_total = _round2(wallet.balance_total + amount)
+                wallet.balance_available = _round2(wallet.balance_available + amount)
+
+                db.add(Transaction(
+                    user_id=uid,
+                    type="manual_credit",
+                    amount=float(amount),
+                    balance_after=float(wallet.balance_total),
+                    reference=reference,
+                ))
+
+                success += 1
+                results.append({"user_id": uid, "status": "credited", "amount": amount})
+            except Exception as e:
+                failed += 1
+                results.append({"user_id": uid, "status": "failed", "error": str(e)})
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "viewer_id": viewer_id,
+            "amount": amount,
+            "segment": segment,
+            "duplicate_window": duplicate_window,
+            "reference": reference,
+            "success": success,
+            "skipped": skipped,
+            "failed": failed,
+            "results": results,
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+@app.get("/admin/crm/bonus-protection/{viewer_id}")
+def admin_crm_bonus_protection(
+    viewer_id: str,
+    segment: str = "low_balance",
+    window_days: int = 30,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    _require_admin(x_admin_key)
+    db = SessionLocal()
+    try:
+        window_days = max(1, min(int(window_days or 30), 365))
+        segment = str(segment or "low_balance").strip()
+        reference = f"crm_bulk_bonus_{segment}:{viewer_id}"
+
+        tree = _get_subtree_rows(db, viewer_id)
+        player_ids = [
+            str(r["id"])
+            for r in tree
+            if r.get("id") and str(r.get("role") or "").strip().lower() == "player"
+        ]
+
+        if not player_ids:
+            return {
+                "ok": True,
+                "viewer_id": viewer_id,
+                "segment": segment,
+                "window_days": window_days,
+                "reference": reference,
+                "already_bonused": 0,
+                "eligible_now": 0,
+                "items": [],
+            }
+
+        rows = db.execute(text("""
+            SELECT
+                user_id,
+                COUNT(*) AS bonus_count,
+                COALESCE(SUM(amount), 0) AS bonus_amount,
+                MAX(created_at) AS last_bonus_at
+            FROM transactions
+            WHERE user_id = ANY(:player_ids)
+              AND reference = :reference
+              AND created_at >= NOW() - CAST((:window_days || ' days') AS interval)
+            GROUP BY user_id
+            ORDER BY last_bonus_at DESC
+        """), {
+            "player_ids": player_ids,
+            "reference": reference,
+            "window_days": window_days,
+        }).mappings().all()
+
+        return {
+            "ok": True,
+            "viewer_id": viewer_id,
+            "segment": segment,
+            "window_days": window_days,
+            "reference": reference,
+            "already_bonused": len(rows),
+            "eligible_now": max(0, len(player_ids) - len(rows)),
+            "player_count": len(player_ids),
+            "items": [
+                {
+                    "user_id": r["user_id"],
+                    "bonus_count": int(r["bonus_count"] or 0),
+                    "bonus_amount": float(r["bonus_amount"] or 0),
+                    "last_bonus_at": r["last_bonus_at"].isoformat() if r["last_bonus_at"] else None,
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        db.close()
+
+@app.get("/admin/intelligence/player-pnl/{viewer_id}")
+def admin_intelligence_player_pnl(
+    viewer_id: str,
+    period: str = "7d",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    _require_admin(x_admin_key)
+
+    db = SessionLocal()
+
+    try:
+        _enforce_hierarchy_scope(db, viewer_id, viewer_id)
+
+        tree = _get_subtree_rows(db, viewer_id)
+
+        player_ids = [
+            str(r["id"])
+            for r in tree
+            if r.get("id")
+            and str(r.get("role") or "").strip().lower() == "player"
+        ]
+
+        if not player_ids:
+            return {
+                "ok": True,
+                "viewer_id": viewer_id,
+                "period": period,
+                "summary": {},
+                "items": []
+            }
+
+        period = (period or "7d").lower().strip()
+
+        params = {
+            "player_ids": player_ids
+        }
+
+        if period == "today":
+            date_where = "t.created_at >= date_trunc('day', NOW())"
+
+        elif period == "30d":
+            date_where = "t.created_at >= NOW() - INTERVAL '30 days'"
+
+        elif period == "custom" and start_date and end_date:
+            date_where = """
+                t.created_at >= :start_date::date
+                AND t.created_at < (:end_date::date + INTERVAL '1 day')
+            """
+            params["start_date"] = start_date
+            params["end_date"] = end_date
+
+        else:
+            period = "7d"
+            date_where = "t.created_at >= NOW() - INTERVAL '7 days'"
+
+        sql = f"""
+            SELECT
+                t.user_id,
+
+                ROUND(
+                    SUM(
+                        CASE
+                            WHEN t.type LIKE '%bet'
+                            THEN ABS(t.amount)
+                            ELSE 0
+                        END
+                    )::numeric,
+                    2
+                ) AS total_bet,
+
+                ROUND(
+                    SUM(
+                        CASE
+                            WHEN t.type LIKE '%payout'
+                                 OR t.type = 'softswiss_win'
+                            THEN t.amount
+                            ELSE 0
+                        END
+                    )::numeric,
+                    2
+                ) AS total_win,
+
+                ROUND(
+                    SUM(
+                        CASE
+                            WHEN t.type LIKE '%bet'
+                            THEN t.amount
+
+                            WHEN t.type LIKE '%payout'
+                                 OR t.type = 'softswiss_win'
+                            THEN t.amount
+
+                            ELSE 0
+                        END
+                    )::numeric,
+                    2
+                ) AS player_net,
+
+                ROUND(
+                    (
+                        -SUM(
+                            CASE
+                                WHEN t.type LIKE '%bet'
+                                THEN t.amount
+
+                                WHEN t.type LIKE '%payout'
+                                     OR t.type = 'softswiss_win'
+                                THEN t.amount
+
+                                ELSE 0
+                            END
+                        )
+                    )::numeric,
+                    2
+                ) AS house_net,
+
+                MAX(t.created_at) AS last_activity_at,
+
+                COALESCE(w.balance_total, 0) AS balance_total,
+                COALESCE(w.balance_available, 0) AS balance_available
+
+            FROM transactions t
+
+            LEFT JOIN wallets w
+                ON w.user_id = t.user_id
+
+            WHERE t.user_id = ANY(:player_ids)
+
+              AND ({date_where})
+
+              AND (
+                    t.type LIKE '%bet'
+                    OR t.type LIKE '%payout'
+                    OR t.type = 'softswiss_win'
+              )
+
+            GROUP BY
+                t.user_id,
+                w.balance_total,
+                w.balance_available
+
+            ORDER BY player_net DESC
+        """
+
+        rows = db.execute(
+            sa_text(sql),
+            params
+        ).mappings().all()
+
+        items = [dict(r) for r in rows]
+
+        total_bet = sum(float(r.get("total_bet") or 0) for r in items)
+        total_win = sum(float(r.get("total_win") or 0) for r in items)
+        player_net = sum(float(r.get("player_net") or 0) for r in items)
+        house_net = sum(float(r.get("house_net") or 0) for r in items)
+
+        return {
+            "ok": True,
+            "viewer_id": viewer_id,
+            "period": period,
+
+            "summary": {
+                "players": len(items),
+                "total_bet": round(total_bet, 2),
+                "total_win": round(total_win, 2),
+                "player_net": round(player_net, 2),
+                "house_net": round(house_net, 2),
+            },
+
+            "items": items
+        }
+
     finally:
         db.close()
 
