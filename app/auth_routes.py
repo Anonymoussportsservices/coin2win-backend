@@ -2,6 +2,7 @@ from app.rate_limit import check_rate_limit
 from fastapi import Request
 import os
 import uuid
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -41,6 +42,66 @@ class LoginBody(BaseModel):
     email: EmailStr
     password: str
     registered_host: str | None = None
+
+
+
+def _request_ip(request: Request) -> str:
+    try:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+        if request.client:
+            return request.client.host
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _device_hash(ip: str, user_agent: str) -> str:
+    raw = f"{ip}|{user_agent}".encode("utf-8", errors="ignore")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _safe_login_device_log(
+    *,
+    request: Request,
+    account_type: str,
+    user_id: str | None = None,
+    agent_id: str | None = None,
+    login_identifier: str | None = None,
+    success: bool = False,
+    failure_reason: str | None = None,
+    metadata: dict | None = None,
+):
+    try:
+        ip = _request_ip(request)
+        ua = request.headers.get("user-agent", "")
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO login_device_logs (
+                    account_type, user_id, agent_id, login_identifier,
+                    success, failure_reason, ip_address, user_agent,
+                    device_hash, request_path, metadata
+                ) VALUES (
+                    :account_type, :user_id, :agent_id, :login_identifier,
+                    :success, :failure_reason, :ip_address, :user_agent,
+                    :device_hash, :request_path, CAST(:metadata AS jsonb)
+                )
+            """), {
+                "account_type": account_type,
+                "user_id": user_id,
+                "agent_id": agent_id,
+                "login_identifier": login_identifier,
+                "success": bool(success),
+                "failure_reason": failure_reason,
+                "ip_address": ip,
+                "user_agent": ua,
+                "device_hash": _device_hash(ip, ua),
+                "request_path": str(request.url.path),
+                "metadata": __import__("json").dumps(metadata or {}),
+            })
+    except Exception as e:
+        print(f"[login-device-log-failed] account_type={account_type} success={success} error={e}", flush=True)
 
 
 def init_auth_tables() -> None:
@@ -179,8 +240,8 @@ def login_host_allows_user(db, user_id: str, registered_host: str | None):
 def ensure_player_bridge_records(db, user_id: str) -> None:
     owner_row = db.execute(text("""
         SELECT id
-        FROM c2w_users
-        WHERE role = 'super_admin'
+        FROM users
+        WHERE role IN ('super_admin', 'superadmin')
         ORDER BY created_at ASC NULLS LAST, id ASC
         LIMIT 1
     """)).mappings().first()
@@ -189,7 +250,7 @@ def ensure_player_bridge_records(db, user_id: str) -> None:
 
     existing_user = db.execute(text("""
         SELECT id
-        FROM c2w_users
+        FROM users
         WHERE id = :user_id
         LIMIT 1
     """), {"user_id": user_id}).fetchone()
@@ -339,29 +400,80 @@ def login(body: LoginBody, request: Request):
     with SessionLocal() as db:
         row = db.execute(
             text("""
-                SELECT user_id, email, username, password_hash, is_active
-                FROM c2w_users
-                WHERE email = :email
+                SELECT
+                    cu.user_id,
+                    cu.email,
+                    cu.username,
+                    cu.password_hash,
+                    COALESCE(cu.is_active, TRUE) AS auth_is_active,
+                    u.role,
+                    COALESCE(u.is_active, TRUE) AS user_is_active
+                FROM c2w_users cu
+                LEFT JOIN users u
+                    ON u.id = cu.user_id
+                WHERE cu.email = :email
                 LIMIT 1
             """),
             {"email": email}
         ).mappings().first()
 
     if not row:
+        _safe_login_device_log(request=request, account_type="player", login_identifier=email, success=False, failure_reason="invalid_email")
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    if not row["is_active"]:
+    role = str(row.get("role") or "").strip().lower()
+
+    if role != "player":
+        _safe_login_device_log(
+            request=request,
+            account_type="player",
+            user_id=row["user_id"],
+            login_identifier=email,
+            success=False,
+            failure_reason="non_player_role",
+            metadata={"role": role or "missing"},
+        )
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    if row.get("auth_is_active") is False or row.get("user_is_active") is False:
+        _safe_login_device_log(
+            request=request,
+            account_type="player",
+            user_id=row["user_id"],
+            login_identifier=email,
+            success=False,
+            failure_reason="inactive",
+        )
         raise HTTPException(status_code=403, detail="User is inactive")
 
     if not verify_password(body.password, row["password_hash"]):
+        _safe_login_device_log(request=request, account_type="player", user_id=row["user_id"], login_identifier=email, success=False, failure_reason="invalid_password")
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     host_allowed, login_scope = login_host_allows_user(db, row["user_id"], registered_host)
     if not host_allowed:
+        _safe_login_device_log(
+            request=request,
+            account_type="player",
+            user_id=row["user_id"],
+            login_identifier=email,
+            success=False,
+            failure_reason="host_not_allowed",
+            metadata={"registered_host": registered_host},
+        )
         raise HTTPException(
             status_code=403,
             detail="This account is not assigned to this site. Please log in from the correct platform."
         )
+
+    _safe_login_device_log(
+        request=request,
+        account_type="player",
+        user_id=row["user_id"],
+        login_identifier=email,
+        success=True,
+        metadata={"registered_host": registered_host, "login_scope": login_scope},
+    )
 
     token = create_access_token(
         user_id=row["user_id"],

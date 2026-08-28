@@ -12,3 +12,6 @@ app/*.bak*
 app/main.py.backup_prod_ready
 snapshot_*.tar.gz
 coin2win_db_*
+
+.env.bak*
+uploads/kyc/

@@ -54,14 +54,24 @@ def run_global_billing(period_key: str):
             if not subtree_ids:
                 subtree_ids = [child_id]
 
-            sportsbook_ggr = 0.0
+            sportsbook_ggr = conn.execute(text("""
+                SELECT COALESCE(SUM(ggr), 0)
+                FROM billing_revenue_events
+                WHERE user_id = ANY(:ids)
+                  AND vertical = 'sportsbook'
+                  AND created_at >= :period_start
+                  AND created_at < :period_end
+            """), {
+                "ids": subtree_ids,
+                "period_start": period_start,
+                "period_end": period_end,
+            }).scalar() or 0
 
             casino_ggr = conn.execute(text("""
-                SELECT COALESCE(-SUM(wallet_delta), 0)
-                FROM softswiss_transactions
+                SELECT COALESCE(SUM(ggr), 0)
+                FROM billing_revenue_events
                 WHERE user_id = ANY(:ids)
-                  AND status = 'processed'
-                  AND type IN ('bet', 'win', 'rollback')
+                  AND vertical = 'casino'
                   AND created_at >= :period_start
                   AND created_at < :period_end
             """), {
@@ -70,10 +80,11 @@ def run_global_billing(period_key: str):
                 "period_end": period_end,
             }).scalar() or 0
 
-            dice_ggr = conn.execute(text("""
-                SELECT COALESCE(SUM(amount_usd - payout), 0)
-                FROM dice_bets
+            originals_ggr = conn.execute(text("""
+                SELECT COALESCE(SUM(ggr), 0)
+                FROM billing_revenue_events
                 WHERE user_id = ANY(:ids)
+                  AND vertical = 'originals'
                   AND created_at >= :period_start
                   AND created_at < :period_end
             """), {
@@ -82,31 +93,19 @@ def run_global_billing(period_key: str):
                 "period_end": period_end,
             }).scalar() or 0
 
-            crash_ggr_local = conn.execute(text("""
-                SELECT COALESCE(SUM(amount_usd - payout), 0)
-                FROM crash_bets
-                WHERE user_id = ANY(:ids)
-                  AND created_at >= :period_start
-                  AND created_at < :period_end
-            """), {
-                "ids": subtree_ids,
-                "period_start": period_start,
-                "period_end": period_end,
-            }).scalar() or 0
+            crash_ggr = float(originals_ggr or 0)
 
-            crash_ggr_global = conn.execute(text("""
-                SELECT COALESCE(SUM(amount_usd - payout), 0)
-                FROM global_crash_bets
-                WHERE user_id = ANY(:ids)
-                  AND created_at >= :period_start
-                  AND created_at < :period_end
+            conn.execute(text("""
+                UPDATE billing_runs
+                SET is_current = FALSE
+                WHERE parent_id = :parent_id
+                  AND child_id = :child_id
+                  AND period_key = :period_key
             """), {
-                "ids": subtree_ids,
-                "period_start": period_start,
-                "period_end": period_end,
-            }).scalar() or 0
-
-            crash_ggr = float(dice_ggr or 0) + float(crash_ggr_local or 0) + float(crash_ggr_global or 0)
+                "parent_id": parent_id,
+                "child_id": child_id,
+                "period_key": period_key,
+            })
 
             row = conn.execute(text("""
                 SELECT * FROM run_billing_edge(
@@ -126,6 +125,12 @@ def run_global_billing(period_key: str):
                 "casino_ggr": casino_ggr,
                 "crash_ggr": crash_ggr,
             }).fetchone()
+
+            conn.execute(text("""
+                UPDATE billing_runs
+                SET is_current = TRUE
+                WHERE id = :run_id
+            """), {"run_id": row[0]})
 
             results.append({
                 "run_id": row[0],
