@@ -6907,14 +6907,14 @@ def _enforce_hierarchy_scope(db, viewer_user_id: str, target_user_id: str):
     return viewer
 
 
-def _require_authenticated_agent(db, request: Request):
+def _require_authenticated_actor(db, request: Request):
     authorization = request.headers.get("authorization")
     token = get_agent_bearer_token(authorization)
     payload = decode_agent_access_token(token)
 
-    agent_id = str(payload.get("sub") or "").strip()
+    actor_id = str(payload.get("sub") or "").strip()
 
-    if not agent_id:
+    if not actor_id:
         raise HTTPException(
             status_code=401,
             detail="Invalid agent session",
@@ -6931,24 +6931,16 @@ def _require_authenticated_agent(db, request: Request):
             FROM users u
             INNER JOIN c2w_users cu
                 ON cu.user_id = u.id
-            WHERE u.id = :agent_id
+            WHERE u.id = :actor_id
             LIMIT 1
         """),
-        {"agent_id": agent_id},
+        {"actor_id": actor_id},
     ).mappings().first()
 
     if not row:
         raise HTTPException(
             status_code=401,
             detail="Agent session account not found",
-        )
-
-    role = _normalize_role(row.get("role"))
-
-    if not _can_view_admin_hierarchy(role):
-        raise HTTPException(
-            status_code=403,
-            detail="Agent access not allowed for this role",
         )
 
     if (
@@ -6962,9 +6954,21 @@ def _require_authenticated_agent(db, request: Request):
 
     return {
         "id": str(row["id"]),
-        "role": role,
+        "role": _normalize_role(row.get("role")),
         "parent_id": row.get("parent_id"),
     }
+
+
+def _require_authenticated_agent(db, request: Request):
+    actor = _require_authenticated_actor(db, request)
+
+    if not _can_view_admin_hierarchy(actor["role"]):
+        raise HTTPException(
+            status_code=403,
+            detail="Agent access not allowed for this role",
+        )
+
+    return actor
 
 
 def _enforce_authenticated_scope(

@@ -262,12 +262,15 @@ from passlib.context import CryptContext
 pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 class AgentChangePasswordBody(BaseModel):
-    agent_id: str
     new_password: str
 
 @router.post("/agent/auth/change-password")
-def change_password(body: AgentChangePasswordBody):
-    agent_id = body.agent_id.strip()
+def change_password(body: AgentChangePasswordBody, request: Request):
+    authorization = request.headers.get("authorization")
+    token = get_agent_bearer_token(authorization)
+    payload = decode_agent_access_token(token)
+
+    agent_id = str(payload.get("sub") or "").strip()
     new_password = body.new_password.strip()
 
     if not agent_id or not new_password:
