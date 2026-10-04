@@ -1,0 +1,4849 @@
+{
+  "columns": [
+    {
+      "column": "action",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "admin_action_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "actor_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "admin_action_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "actor_type",
+      "data_type": "text",
+      "default": "'admin'::text",
+      "nullable": "NO",
+      "table": "admin_action_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "admin_action_logs",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "bigint",
+      "default": "nextval('admin_action_logs_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "admin_action_logs",
+      "udt_name": "int8"
+    },
+    {
+      "column": "ip_address",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "admin_action_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "metadata",
+      "data_type": "jsonb",
+      "default": null,
+      "nullable": "YES",
+      "table": "admin_action_logs",
+      "udt_name": "jsonb"
+    },
+    {
+      "column": "note",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "admin_action_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "payload_after",
+      "data_type": "jsonb",
+      "default": null,
+      "nullable": "YES",
+      "table": "admin_action_logs",
+      "udt_name": "jsonb"
+    },
+    {
+      "column": "payload_before",
+      "data_type": "jsonb",
+      "default": null,
+      "nullable": "YES",
+      "table": "admin_action_logs",
+      "udt_name": "jsonb"
+    },
+    {
+      "column": "request_path",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "admin_action_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "target_agent_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "admin_action_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "target_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "admin_action_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "target_type",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "admin_action_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "target_user_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "admin_action_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "user_agent",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "admin_action_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "agent_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "agent_ledger",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "amount",
+      "data_type": "numeric",
+      "default": null,
+      "nullable": "YES",
+      "table": "agent_ledger",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "agent_ledger",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('agent_ledger_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "agent_ledger",
+      "udt_name": "int4"
+    },
+    {
+      "column": "reference",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "agent_ledger",
+      "udt_name": "text"
+    },
+    {
+      "column": "type",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "agent_ledger",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "billing_cycle",
+      "data_type": "character varying",
+      "default": "'weekly'::character varying",
+      "nullable": "NO",
+      "table": "billing_edges",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "billing_type",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "billing_edges",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "casino_enabled",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "NO",
+      "table": "billing_edges",
+      "udt_name": "bool"
+    },
+    {
+      "column": "child_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "billing_edges",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "crash_enabled",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "NO",
+      "table": "billing_edges",
+      "udt_name": "bool"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "billing_edges",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "ggr_share",
+      "data_type": "numeric",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_edges",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('billing_edges_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "billing_edges",
+      "udt_name": "int4"
+    },
+    {
+      "column": "is_active",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "NO",
+      "table": "billing_edges",
+      "udt_name": "bool"
+    },
+    {
+      "column": "parent_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "billing_edges",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "pph_rate",
+      "data_type": "numeric",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_edges",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "sportsbook_enabled",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "NO",
+      "table": "billing_edges",
+      "udt_name": "bool"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "billing_edges",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "bet_amount",
+      "data_type": "numeric",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "currency",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "text"
+    },
+    {
+      "column": "event_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "text"
+    },
+    {
+      "column": "game_code",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "text"
+    },
+    {
+      "column": "ggr",
+      "data_type": "numeric",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "payout_amount",
+      "data_type": "numeric",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "provider",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "text"
+    },
+    {
+      "column": "raw_ref",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "text"
+    },
+    {
+      "column": "round_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "text"
+    },
+    {
+      "column": "source",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "text"
+    },
+    {
+      "column": "user_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "text"
+    },
+    {
+      "column": "vertical",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_revenue_events",
+      "udt_name": "text"
+    },
+    {
+      "column": "agent_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "billing_runs",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "billing_mode",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "billing_runs",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "casino_ggr",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "billing_runs",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "child_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_runs",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "crash_ggr",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "billing_runs",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "billing_runs",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "details_json",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_runs",
+      "udt_name": "text"
+    },
+    {
+      "column": "ggr_amount",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "billing_runs",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('billing_runs_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "billing_runs",
+      "udt_name": "int4"
+    },
+    {
+      "column": "is_current",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "NO",
+      "table": "billing_runs",
+      "udt_name": "bool"
+    },
+    {
+      "column": "note",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_runs",
+      "udt_name": "text"
+    },
+    {
+      "column": "paid_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_runs",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "paid_by",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_runs",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "parent_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "billing_runs",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "period_key",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "billing_runs",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "player_count",
+      "data_type": "integer",
+      "default": "0",
+      "nullable": "NO",
+      "table": "billing_runs",
+      "udt_name": "int4"
+    },
+    {
+      "column": "pph_amount",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "billing_runs",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "sportsbook_ggr",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "billing_runs",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": "'generated'::character varying",
+      "nullable": "NO",
+      "table": "billing_runs",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "total_amount",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "billing_runs",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "brand_name",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "brand_domains",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "casino_banners_json",
+      "data_type": "jsonb",
+      "default": "'[]'::jsonb",
+      "nullable": "NO",
+      "table": "brand_domains",
+      "udt_name": "jsonb"
+    },
+    {
+      "column": "casino_lobby_json",
+      "data_type": "jsonb",
+      "default": "'[]'::jsonb",
+      "nullable": "NO",
+      "table": "brand_domains",
+      "udt_name": "jsonb"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "brand_domains",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "domain",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "brand_domains",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "favicon_url",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "brand_domains",
+      "udt_name": "text"
+    },
+    {
+      "column": "home_banners_json",
+      "data_type": "jsonb",
+      "default": "'[]'::jsonb",
+      "nullable": "NO",
+      "table": "brand_domains",
+      "udt_name": "jsonb"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('brand_domains_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "brand_domains",
+      "udt_name": "int4"
+    },
+    {
+      "column": "is_active",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "YES",
+      "table": "brand_domains",
+      "udt_name": "bool"
+    },
+    {
+      "column": "logo_url",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "brand_domains",
+      "udt_name": "text"
+    },
+    {
+      "column": "owner_user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "brand_domains",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "primary_color",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "brand_domains",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "promotion_cards_json",
+      "data_type": "jsonb",
+      "default": "'[]'::jsonb",
+      "nullable": "NO",
+      "table": "brand_domains",
+      "udt_name": "jsonb"
+    },
+    {
+      "column": "promotion_faq_json",
+      "data_type": "jsonb",
+      "default": "'[]'::jsonb",
+      "nullable": "NO",
+      "table": "brand_domains",
+      "udt_name": "jsonb"
+    },
+    {
+      "column": "secondary_color",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "brand_domains",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "support_email",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "brand_domains",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "support_telegram",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "brand_domains",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "theme",
+      "data_type": "text",
+      "default": "'default'::text",
+      "nullable": "YES",
+      "table": "brand_domains",
+      "udt_name": "text"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "c2w_users",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "email",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "c2w_users",
+      "udt_name": "text"
+    },
+    {
+      "column": "full_name",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "c2w_users",
+      "udt_name": "text"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('c2w_users_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "c2w_users",
+      "udt_name": "int4"
+    },
+    {
+      "column": "is_active",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "NO",
+      "table": "c2w_users",
+      "udt_name": "bool"
+    },
+    {
+      "column": "notes",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "c2w_users",
+      "udt_name": "text"
+    },
+    {
+      "column": "password_hash",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "c2w_users",
+      "udt_name": "text"
+    },
+    {
+      "column": "phone",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "c2w_users",
+      "udt_name": "text"
+    },
+    {
+      "column": "telegram",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "c2w_users",
+      "udt_name": "text"
+    },
+    {
+      "column": "user_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "c2w_users",
+      "udt_name": "text"
+    },
+    {
+      "column": "username",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "c2w_users",
+      "udt_name": "text"
+    },
+    {
+      "column": "amount_usd",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "coinflip_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "choice",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "coinflip_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "coinflip_bets",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('coinflip_bets_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "coinflip_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "payout",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "coinflip_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "result",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "coinflip_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "coinflip_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "win",
+      "data_type": "boolean",
+      "default": null,
+      "nullable": "NO",
+      "table": "coinflip_bets",
+      "udt_name": "bool"
+    },
+    {
+      "column": "amount_usd",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "auto_cashout",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "YES",
+      "table": "crash_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "cashout_multiplier",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "YES",
+      "table": "crash_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "crash_bets",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('crash_bets_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "crash_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "payout",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "round_id",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "client_seed",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_rounds",
+      "udt_name": "text"
+    },
+    {
+      "column": "crash_point",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_rounds",
+      "udt_name": "float8"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "crash_rounds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "ended_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "crash_rounds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('crash_rounds_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "crash_rounds",
+      "udt_name": "int4"
+    },
+    {
+      "column": "nonce",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_rounds",
+      "udt_name": "int4"
+    },
+    {
+      "column": "server_seed_hash",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_rounds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "started_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "crash_rounds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_rounds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_rounds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "client_seed",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_seeds",
+      "udt_name": "text"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "crash_seeds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('crash_seeds_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "crash_seeds",
+      "udt_name": "int4"
+    },
+    {
+      "column": "nonce",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_seeds",
+      "udt_name": "int4"
+    },
+    {
+      "column": "prev_server_seed",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "crash_seeds",
+      "udt_name": "text"
+    },
+    {
+      "column": "prev_server_seed_hash",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "crash_seeds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "server_seed",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_seeds",
+      "udt_name": "text"
+    },
+    {
+      "column": "server_seed_hash",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_seeds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "crash_seeds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "crash_seeds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "amount_usd",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "deposits",
+      "udt_name": "float8"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "deposits",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('deposits_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "deposits",
+      "udt_name": "int4"
+    },
+    {
+      "column": "pay_address",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "deposits",
+      "udt_name": "text"
+    },
+    {
+      "column": "pay_amount",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "YES",
+      "table": "deposits",
+      "udt_name": "float8"
+    },
+    {
+      "column": "pay_currency",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "deposits",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "payment_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "deposits",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "raw_create_response",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "deposits",
+      "udt_name": "text"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "deposits",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "deposits",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "deposits",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "amount_usd",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "client_seed",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_bets",
+      "udt_name": "text"
+    },
+    {
+      "column": "condition",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "dice_bets",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('dice_bets_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "dice_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "multiplier",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "nonce",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "payout",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "roll",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "server_seed_hash",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "target",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "win",
+      "data_type": "boolean",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_bets",
+      "udt_name": "bool"
+    },
+    {
+      "column": "client_seed",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_seeds",
+      "udt_name": "text"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "dice_seeds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('dice_seeds_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "dice_seeds",
+      "udt_name": "int4"
+    },
+    {
+      "column": "nonce",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_seeds",
+      "udt_name": "int4"
+    },
+    {
+      "column": "prev_server_seed",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "dice_seeds",
+      "udt_name": "text"
+    },
+    {
+      "column": "prev_server_seed_hash",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "dice_seeds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "server_seed",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_seeds",
+      "udt_name": "text"
+    },
+    {
+      "column": "server_seed_hash",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_seeds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "dice_seeds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "dice_seeds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "amount_usd",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "global_crash_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "auto_cashout",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "YES",
+      "table": "global_crash_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "cashout_multiplier",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "YES",
+      "table": "global_crash_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "global_crash_bets",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('global_crash_bets_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "global_crash_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "payout",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "global_crash_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "round_id",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "global_crash_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "settled_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "global_crash_bets",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "global_crash_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "global_crash_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "betting_started_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "global_crash_rounds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "client_seed",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "global_crash_rounds",
+      "udt_name": "text"
+    },
+    {
+      "column": "cooldown_until",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "global_crash_rounds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "crash_point",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "global_crash_rounds",
+      "udt_name": "float8"
+    },
+    {
+      "column": "crashed_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "global_crash_rounds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "global_crash_rounds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "ended_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "global_crash_rounds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('global_crash_rounds_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "global_crash_rounds",
+      "udt_name": "int4"
+    },
+    {
+      "column": "nonce",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "global_crash_rounds",
+      "udt_name": "int4"
+    },
+    {
+      "column": "server_seed_hash",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "global_crash_rounds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "starts_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "global_crash_rounds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "global_crash_rounds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "amount_usd",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "hilo_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "choice",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "hilo_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "hilo_bets",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "current_card",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "hilo_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('hilo_bets_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "hilo_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "multiplier",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "hilo_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "payout",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "hilo_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "result_card",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "YES",
+      "table": "hilo_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "start_card",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "hilo_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "hilo_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "streak",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "hilo_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "hilo_bets",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "hilo_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "action",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "kyc_audit_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "actor",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "kyc_audit_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "kyc_audit_logs",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "from_level",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "YES",
+      "table": "kyc_audit_logs",
+      "udt_name": "int4"
+    },
+    {
+      "column": "id",
+      "data_type": "bigint",
+      "default": "nextval('kyc_audit_logs_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "kyc_audit_logs",
+      "udt_name": "int8"
+    },
+    {
+      "column": "note",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "kyc_audit_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "to_level",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "YES",
+      "table": "kyc_audit_logs",
+      "udt_name": "int4"
+    },
+    {
+      "column": "user_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "kyc_audit_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "auto_withdraw_enabled",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "bool"
+    },
+    {
+      "column": "cooldown_minutes",
+      "data_type": "integer",
+      "default": "0",
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "int4"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "daily_limit",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "id",
+      "data_type": "bigint",
+      "default": "nextval('kyc_limit_rules_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "int8"
+    },
+    {
+      "column": "is_active",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "bool"
+    },
+    {
+      "column": "level",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "int4"
+    },
+    {
+      "column": "min_withdrawal",
+      "data_type": "numeric",
+      "default": "20",
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "monthly_limit",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "owner_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "text"
+    },
+    {
+      "column": "per_withdrawal_limit",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "requires_manual_review_over",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "updated_by",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "kyc_limit_rules",
+      "udt_name": "text"
+    },
+    {
+      "column": "weekly_limit",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "kyc_limit_rules",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "document_back_path",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "kyc_submissions",
+      "udt_name": "text"
+    },
+    {
+      "column": "document_front_path",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "kyc_submissions",
+      "udt_name": "text"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('kyc_submissions_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "kyc_submissions",
+      "udt_name": "int4"
+    },
+    {
+      "column": "rejection_reason",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "kyc_submissions",
+      "udt_name": "text"
+    },
+    {
+      "column": "reviewed_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "kyc_submissions",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "reviewed_by",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "kyc_submissions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "selfie_path",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "kyc_submissions",
+      "udt_name": "text"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": "'pending'::character varying",
+      "nullable": "NO",
+      "table": "kyc_submissions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "submitted_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "kyc_submissions",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "kyc_submissions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "account_type",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "login_device_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "agent_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "login_device_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "login_device_logs",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "device_hash",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "login_device_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "failure_reason",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "login_device_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "id",
+      "data_type": "bigint",
+      "default": "nextval('login_device_logs_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "login_device_logs",
+      "udt_name": "int8"
+    },
+    {
+      "column": "ip_address",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "login_device_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "login_identifier",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "login_device_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "metadata",
+      "data_type": "jsonb",
+      "default": null,
+      "nullable": "YES",
+      "table": "login_device_logs",
+      "udt_name": "jsonb"
+    },
+    {
+      "column": "request_path",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "login_device_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "success",
+      "data_type": "boolean",
+      "default": "false",
+      "nullable": "NO",
+      "table": "login_device_logs",
+      "udt_name": "bool"
+    },
+    {
+      "column": "user_agent",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "login_device_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "user_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "login_device_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "amount_usd",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "mines_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "mines_bets",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "grid_size",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "mines_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "hit_mine",
+      "data_type": "boolean",
+      "default": null,
+      "nullable": "NO",
+      "table": "mines_bets",
+      "udt_name": "bool"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('mines_bets_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "mines_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "mine_count",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "mines_bets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "mines_positions",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "mines_bets",
+      "udt_name": "text"
+    },
+    {
+      "column": "multiplier",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "mines_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "payout",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "mines_bets",
+      "udt_name": "float8"
+    },
+    {
+      "column": "revealed_tiles",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "mines_bets",
+      "udt_name": "text"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "mines_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "mines_bets",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "mines_bets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "password_reset_tokens",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "email",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "password_reset_tokens",
+      "udt_name": "text"
+    },
+    {
+      "column": "expires_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "NO",
+      "table": "password_reset_tokens",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('password_reset_tokens_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "password_reset_tokens",
+      "udt_name": "int4"
+    },
+    {
+      "column": "token",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "password_reset_tokens",
+      "udt_name": "text"
+    },
+    {
+      "column": "auto_withdraw_enabled",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "bool"
+    },
+    {
+      "column": "cooldown_minutes",
+      "data_type": "integer",
+      "default": "0",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "int4"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "daily_limit",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "id",
+      "data_type": "bigint",
+      "default": "nextval('player_kyc_limit_overrides_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "int8"
+    },
+    {
+      "column": "is_active",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "bool"
+    },
+    {
+      "column": "level",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "int4"
+    },
+    {
+      "column": "min_withdrawal",
+      "data_type": "numeric",
+      "default": "20",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "monthly_limit",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "per_withdrawal_limit",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "reason",
+      "data_type": "text",
+      "default": "''::text",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "text"
+    },
+    {
+      "column": "requires_manual_review_over",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "updated_by",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "text"
+    },
+    {
+      "column": "user_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "text"
+    },
+    {
+      "column": "weekly_limit",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "NO",
+      "table": "player_kyc_limit_overrides",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "category",
+      "data_type": "text",
+      "default": "'slots'::text",
+      "nullable": "YES",
+      "table": "softswiss_games",
+      "udt_name": "text"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "softswiss_games",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('softswiss_games_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "softswiss_games",
+      "udt_name": "int4"
+    },
+    {
+      "column": "image_note",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_games",
+      "udt_name": "text"
+    },
+    {
+      "column": "image_status",
+      "data_type": "text",
+      "default": "'unknown'::text",
+      "nullable": "YES",
+      "table": "softswiss_games",
+      "udt_name": "text"
+    },
+    {
+      "column": "image_url",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_games",
+      "udt_name": "text"
+    },
+    {
+      "column": "is_enabled",
+      "data_type": "boolean",
+      "default": "false",
+      "nullable": "NO",
+      "table": "softswiss_games",
+      "udt_name": "bool"
+    },
+    {
+      "column": "is_featured",
+      "data_type": "boolean",
+      "default": "false",
+      "nullable": "NO",
+      "table": "softswiss_games",
+      "udt_name": "bool"
+    },
+    {
+      "column": "is_live",
+      "data_type": "boolean",
+      "default": "false",
+      "nullable": "NO",
+      "table": "softswiss_games",
+      "udt_name": "bool"
+    },
+    {
+      "column": "provider",
+      "data_type": "character varying",
+      "default": "'softswiss'::character varying",
+      "nullable": "YES",
+      "table": "softswiss_games",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "provider_game_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "softswiss_games",
+      "udt_name": "text"
+    },
+    {
+      "column": "raw_payload",
+      "data_type": "jsonb",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_games",
+      "udt_name": "jsonb"
+    },
+    {
+      "column": "sort_order",
+      "data_type": "integer",
+      "default": "0",
+      "nullable": "NO",
+      "table": "softswiss_games",
+      "udt_name": "int4"
+    },
+    {
+      "column": "title",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "softswiss_games",
+      "udt_name": "text"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "softswiss_games",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "softswiss_rounds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "game_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_rounds",
+      "udt_name": "text"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('softswiss_rounds_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "softswiss_rounds",
+      "udt_name": "int4"
+    },
+    {
+      "column": "provider",
+      "data_type": "character varying",
+      "default": "'softswiss'::character varying",
+      "nullable": "YES",
+      "table": "softswiss_rounds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "round_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "softswiss_rounds",
+      "udt_name": "text"
+    },
+    {
+      "column": "session_payload",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_rounds",
+      "udt_name": "text"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": "'open'::character varying",
+      "nullable": "YES",
+      "table": "softswiss_rounds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "softswiss_rounds",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "softswiss_rounds",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "softswiss_sessions",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "currency",
+      "data_type": "character varying",
+      "default": "'USD'::character varying",
+      "nullable": "YES",
+      "table": "softswiss_sessions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "game_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_sessions",
+      "udt_name": "text"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('softswiss_sessions_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "softswiss_sessions",
+      "udt_name": "int4"
+    },
+    {
+      "column": "jurisdiction",
+      "data_type": "character varying",
+      "default": "'CR'::character varying",
+      "nullable": "YES",
+      "table": "softswiss_sessions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "locale",
+      "data_type": "character varying",
+      "default": "'en'::character varying",
+      "nullable": "YES",
+      "table": "softswiss_sessions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "provider",
+      "data_type": "text",
+      "default": "'softswiss'::text",
+      "nullable": "YES",
+      "table": "softswiss_sessions",
+      "udt_name": "text"
+    },
+    {
+      "column": "session_payload",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "softswiss_sessions",
+      "udt_name": "text"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": "'active'::character varying",
+      "nullable": "YES",
+      "table": "softswiss_sessions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "softswiss_sessions",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "softswiss_sessions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "amount",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "currency",
+      "data_type": "character varying",
+      "default": "'USD'::character varying",
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "game_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "text"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('softswiss_transactions_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "softswiss_transactions",
+      "udt_name": "int4"
+    },
+    {
+      "column": "original_transaction_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "text"
+    },
+    {
+      "column": "provider",
+      "data_type": "character varying",
+      "default": "'softswiss'::character varying",
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "provider_transaction_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "text"
+    },
+    {
+      "column": "raw_payload",
+      "data_type": "jsonb",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "jsonb"
+    },
+    {
+      "column": "rollback_transaction_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "text"
+    },
+    {
+      "column": "round_id",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "text"
+    },
+    {
+      "column": "session_payload",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "text"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": "'processed'::character varying",
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "type",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "softswiss_transactions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "wallet_delta",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "softswiss_transactions",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "amount",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "transactions",
+      "udt_name": "float8"
+    },
+    {
+      "column": "balance_after",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "transactions",
+      "udt_name": "float8"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "transactions",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('transactions_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "transactions",
+      "udt_name": "int4"
+    },
+    {
+      "column": "reference",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "transactions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "type",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "transactions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "transactions",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "agent_code",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "auto_withdraw_enabled",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "bool"
+    },
+    {
+      "column": "auto_withdraw_limit",
+      "data_type": "double precision",
+      "default": "0",
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "float8"
+    },
+    {
+      "column": "billing_type",
+      "data_type": "character varying",
+      "default": "'ggr'::character varying",
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "casino_ggr",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "created_by",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "email",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "text"
+    },
+    {
+      "column": "ggr_share",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "users",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "is_active",
+      "data_type": "boolean",
+      "default": "true",
+      "nullable": "NO",
+      "table": "users",
+      "udt_name": "bool"
+    },
+    {
+      "column": "kyc_approved_by",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "text"
+    },
+    {
+      "column": "kyc_doc_front_path",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "text"
+    },
+    {
+      "column": "kyc_level",
+      "data_type": "integer",
+      "default": "0",
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "int4"
+    },
+    {
+      "column": "kyc_poa_path",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "text"
+    },
+    {
+      "column": "kyc_rejected_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "kyc_rejected_reason",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "text"
+    },
+    {
+      "column": "kyc_reviewed_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "kyc_reviewed_by",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "kyc_selfie_path",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "text"
+    },
+    {
+      "column": "kyc_status",
+      "data_type": "character varying",
+      "default": "'unverified'::character varying",
+      "nullable": "NO",
+      "table": "users",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "kyc_submitted_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "kyc_verified_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "last_agent_code_change_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "last_agent_code_change_by",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "last_created_by_change_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "last_created_by_change_by",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "last_parent_change_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "last_parent_change_by",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "live_betting_ggr",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "originals_ggr",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "parent_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "password_hash",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "text"
+    },
+    {
+      "column": "permissions_json",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "text"
+    },
+    {
+      "column": "pph_rate",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "role",
+      "data_type": "character varying",
+      "default": "'player'::character varying",
+      "nullable": "NO",
+      "table": "users",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "service_ggr",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "service_pph",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "updated_by",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "users",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "balance_available",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "wallets",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "balance_pending",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "wallets",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "balance_total",
+      "data_type": "numeric",
+      "default": "0",
+      "nullable": "YES",
+      "table": "wallets",
+      "udt_name": "numeric"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('wallets_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "wallets",
+      "udt_name": "int4"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "wallets",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "wallets",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "action",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "withdrawal_audit_logs",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "actor_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawal_audit_logs",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "NO",
+      "table": "withdrawal_audit_logs",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('withdrawal_audit_logs_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "withdrawal_audit_logs",
+      "udt_name": "int4"
+    },
+    {
+      "column": "note",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawal_audit_logs",
+      "udt_name": "text"
+    },
+    {
+      "column": "withdrawal_id",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "withdrawal_audit_logs",
+      "udt_name": "int4"
+    },
+    {
+      "column": "amount_usd",
+      "data_type": "double precision",
+      "default": null,
+      "nullable": "NO",
+      "table": "withdrawals",
+      "udt_name": "float8"
+    },
+    {
+      "column": "approved_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "approved_by",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "batch_withdrawal_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "completed_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "created_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "failed_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "failure_reason",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "text"
+    },
+    {
+      "column": "id",
+      "data_type": "integer",
+      "default": "nextval('withdrawals_id_seq'::regclass)",
+      "nullable": "NO",
+      "table": "withdrawals",
+      "udt_name": "int4"
+    },
+    {
+      "column": "note",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "text"
+    },
+    {
+      "column": "payout_address",
+      "data_type": "text",
+      "default": null,
+      "nullable": "NO",
+      "table": "withdrawals",
+      "udt_name": "text"
+    },
+    {
+      "column": "payout_currency",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "withdrawals",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "payout_response_json",
+      "data_type": "text",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "text"
+    },
+    {
+      "column": "payout_status",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "processor_ref",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "refunded",
+      "data_type": "integer",
+      "default": null,
+      "nullable": "NO",
+      "table": "withdrawals",
+      "udt_name": "int4"
+    },
+    {
+      "column": "rejected_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "sent_at",
+      "data_type": "timestamp with time zone",
+      "default": null,
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "status",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "withdrawals",
+      "udt_name": "varchar"
+    },
+    {
+      "column": "updated_at",
+      "data_type": "timestamp with time zone",
+      "default": "now()",
+      "nullable": "YES",
+      "table": "withdrawals",
+      "udt_name": "timestamptz"
+    },
+    {
+      "column": "user_id",
+      "data_type": "character varying",
+      "default": null,
+      "nullable": "NO",
+      "table": "withdrawals",
+      "udt_name": "varchar"
+    }
+  ],
+  "constraints": [
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "admin_action_logs_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "admin_action_logs",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "agent_ledger_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "agent_ledger",
+      "type": "p"
+    },
+    {
+      "check_definition": "CHECK (billing_cycle::text = ANY (ARRAY['weekly'::character varying, 'monthly'::character varying]))",
+      "columns": [
+        "billing_cycle"
+      ],
+      "name": "billing_edges_billing_cycle_check",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "billing_edges",
+      "type": "c"
+    },
+    {
+      "check_definition": "CHECK (billing_type::text = ANY (ARRAY['pph'::character varying, 'ggr'::character varying, 'hybrid'::character varying]))",
+      "columns": [
+        "billing_type"
+      ],
+      "name": "billing_edges_billing_type_check",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "billing_edges",
+      "type": "c"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "child_id"
+      ],
+      "name": "billing_edges_child_id_fkey",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "users",
+      "table": "billing_edges",
+      "type": "f"
+    },
+    {
+      "check_definition": "CHECK (billing_cycle::text = 'monthly'::text)",
+      "columns": [
+        "billing_cycle"
+      ],
+      "name": "billing_edges_cycle_check",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "billing_edges",
+      "type": "c"
+    },
+    {
+      "check_definition": "CHECK (parent_id::text <> child_id::text)",
+      "columns": [
+        "parent_id",
+        "child_id"
+      ],
+      "name": "billing_edges_not_self",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "billing_edges",
+      "type": "c"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "parent_id",
+        "child_id"
+      ],
+      "name": "billing_edges_parent_child_unique",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "billing_edges",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "parent_id"
+      ],
+      "name": "billing_edges_parent_id_fkey",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "users",
+      "table": "billing_edges",
+      "type": "f"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "billing_edges_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "billing_edges",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "child_id"
+      ],
+      "name": "billing_runs_child_fk",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "users",
+      "table": "billing_runs",
+      "type": "f"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "parent_id",
+        "child_id",
+        "period_key",
+        "billing_mode"
+      ],
+      "name": "billing_runs_parent_child_period_unique",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "billing_runs",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "parent_id"
+      ],
+      "name": "billing_runs_parent_fk",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "users",
+      "table": "billing_runs",
+      "type": "f"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "billing_runs_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "billing_runs",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "domain"
+      ],
+      "name": "brand_domains_domain_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "brand_domains",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "brand_domains_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "brand_domains",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "email"
+      ],
+      "name": "c2w_users_email_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "c2w_users",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "c2w_users_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "c2w_users",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "user_id"
+      ],
+      "name": "c2w_users_user_id_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "c2w_users",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "username"
+      ],
+      "name": "c2w_users_username_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "c2w_users",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "coinflip_bets_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "coinflip_bets",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "crash_bets_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "crash_bets",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "round_id"
+      ],
+      "name": "crash_bets_round_id_fkey",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "crash_rounds",
+      "table": "crash_bets",
+      "type": "f"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "crash_rounds_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "crash_rounds",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "crash_seeds_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "crash_seeds",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "user_id"
+      ],
+      "name": "crash_seeds_user_id_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "crash_seeds",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "deposits_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "deposits",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "user_id"
+      ],
+      "name": "deposits_user_id_fkey",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "users",
+      "table": "deposits",
+      "type": "f"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "payment_id"
+      ],
+      "name": "uq_deposits_payment_id",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "deposits",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "dice_bets_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "dice_bets",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "dice_seeds_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "dice_seeds",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "user_id"
+      ],
+      "name": "dice_seeds_user_id_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "dice_seeds",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "global_crash_bets_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "global_crash_bets",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "round_id"
+      ],
+      "name": "global_crash_bets_round_id_fkey",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "global_crash_rounds",
+      "table": "global_crash_bets",
+      "type": "f"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "global_crash_rounds_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "global_crash_rounds",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "hilo_bets_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "hilo_bets",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "kyc_audit_logs_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "kyc_audit_logs",
+      "type": "p"
+    },
+    {
+      "check_definition": "CHECK (level = ANY (ARRAY[1, 2]))",
+      "columns": [
+        "level"
+      ],
+      "name": "kyc_limit_rules_level_check",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "kyc_limit_rules",
+      "type": "c"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "owner_id"
+      ],
+      "name": "kyc_limit_rules_owner_id_fkey",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "users",
+      "table": "kyc_limit_rules",
+      "type": "f"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "owner_id",
+        "level"
+      ],
+      "name": "kyc_limit_rules_owner_id_level_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "kyc_limit_rules",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "kyc_limit_rules_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "kyc_limit_rules",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "kyc_submissions_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "kyc_submissions",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "user_id"
+      ],
+      "name": "kyc_submissions_user_id_fkey",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "users",
+      "table": "kyc_submissions",
+      "type": "f"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "login_device_logs_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "login_device_logs",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "mines_bets_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "mines_bets",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "password_reset_tokens_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "password_reset_tokens",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "token"
+      ],
+      "name": "password_reset_tokens_token_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "password_reset_tokens",
+      "type": "u"
+    },
+    {
+      "check_definition": "CHECK (level = ANY (ARRAY[1, 2]))",
+      "columns": [
+        "level"
+      ],
+      "name": "player_kyc_limit_overrides_level_check",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "player_kyc_limit_overrides",
+      "type": "c"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "player_kyc_limit_overrides_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "player_kyc_limit_overrides",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "user_id"
+      ],
+      "name": "player_kyc_limit_overrides_user_id_fkey",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "users",
+      "table": "player_kyc_limit_overrides",
+      "type": "f"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "user_id"
+      ],
+      "name": "player_kyc_limit_overrides_user_id_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "player_kyc_limit_overrides",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "softswiss_games_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "softswiss_games",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "provider_game_id"
+      ],
+      "name": "softswiss_games_provider_game_id_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "softswiss_games",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "softswiss_rounds_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "softswiss_rounds",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "provider",
+        "round_id"
+      ],
+      "name": "softswiss_rounds_provider_round_id_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "softswiss_rounds",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "softswiss_sessions_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "softswiss_sessions",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "session_payload"
+      ],
+      "name": "softswiss_sessions_session_payload_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "softswiss_sessions",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "softswiss_transactions_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "softswiss_transactions",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "provider_transaction_id"
+      ],
+      "name": "softswiss_transactions_provider_transaction_id_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "softswiss_transactions",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "rollback_transaction_id"
+      ],
+      "name": "softswiss_transactions_rollback_transaction_id_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "softswiss_transactions",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "transactions_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "transactions",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "user_id"
+      ],
+      "name": "transactions_user_id_fkey",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "users",
+      "table": "transactions",
+      "type": "f"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "users_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "users",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "wallets_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "wallets",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "user_id"
+      ],
+      "name": "wallets_user_id_fkey",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "users",
+      "table": "wallets",
+      "type": "f"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "user_id"
+      ],
+      "name": "wallets_user_id_key",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "wallets",
+      "type": "u"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "withdrawal_audit_logs_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "withdrawal_audit_logs",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "id"
+      ],
+      "name": "withdrawals_pkey",
+      "referenced_columns": [],
+      "referenced_table": null,
+      "table": "withdrawals",
+      "type": "p"
+    },
+    {
+      "check_definition": null,
+      "columns": [
+        "user_id"
+      ],
+      "name": "withdrawals_user_id_fkey",
+      "referenced_columns": [
+        "id"
+      ],
+      "referenced_table": "users",
+      "table": "withdrawals",
+      "type": "f"
+    }
+  ],
+  "database": "coin2win",
+  "indexes": [
+    {
+      "definition": "CREATE UNIQUE INDEX admin_action_logs_pkey ON public.admin_action_logs USING btree (id)",
+      "name": "admin_action_logs_pkey",
+      "table": "admin_action_logs"
+    },
+    {
+      "definition": "CREATE INDEX idx_admin_action_logs_action ON public.admin_action_logs USING btree (action)",
+      "name": "idx_admin_action_logs_action",
+      "table": "admin_action_logs"
+    },
+    {
+      "definition": "CREATE INDEX idx_admin_action_logs_actor ON public.admin_action_logs USING btree (actor_type, actor_id)",
+      "name": "idx_admin_action_logs_actor",
+      "table": "admin_action_logs"
+    },
+    {
+      "definition": "CREATE INDEX idx_admin_action_logs_created_at ON public.admin_action_logs USING btree (created_at DESC)",
+      "name": "idx_admin_action_logs_created_at",
+      "table": "admin_action_logs"
+    },
+    {
+      "definition": "CREATE INDEX idx_admin_action_logs_target_agent ON public.admin_action_logs USING btree (target_agent_id)",
+      "name": "idx_admin_action_logs_target_agent",
+      "table": "admin_action_logs"
+    },
+    {
+      "definition": "CREATE INDEX idx_admin_action_logs_target_user ON public.admin_action_logs USING btree (target_user_id)",
+      "name": "idx_admin_action_logs_target_user",
+      "table": "admin_action_logs"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX agent_ledger_pkey ON public.agent_ledger USING btree (id)",
+      "name": "agent_ledger_pkey",
+      "table": "agent_ledger"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX ux_agent_ledger_agent_type_reference ON public.agent_ledger USING btree (agent_id, type, reference)",
+      "name": "ux_agent_ledger_agent_type_reference",
+      "table": "agent_ledger"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX billing_edges_parent_child_unique ON public.billing_edges USING btree (parent_id, child_id)",
+      "name": "billing_edges_parent_child_unique",
+      "table": "billing_edges"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX billing_edges_pkey ON public.billing_edges USING btree (id)",
+      "name": "billing_edges_pkey",
+      "table": "billing_edges"
+    },
+    {
+      "definition": "CREATE INDEX idx_billing_edges_active ON public.billing_edges USING btree (is_active)",
+      "name": "idx_billing_edges_active",
+      "table": "billing_edges"
+    },
+    {
+      "definition": "CREATE INDEX idx_billing_edges_child_id ON public.billing_edges USING btree (child_id)",
+      "name": "idx_billing_edges_child_id",
+      "table": "billing_edges"
+    },
+    {
+      "definition": "CREATE INDEX idx_billing_edges_parent_id ON public.billing_edges USING btree (parent_id)",
+      "name": "idx_billing_edges_parent_id",
+      "table": "billing_edges"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX ux_billing_edges_one_active_child ON public.billing_edges USING btree (child_id) WHERE (is_active = true)",
+      "name": "ux_billing_edges_one_active_child",
+      "table": "billing_edges"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX billing_runs_parent_child_period_unique ON public.billing_runs USING btree (parent_id, child_id, period_key, billing_mode)",
+      "name": "billing_runs_parent_child_period_unique",
+      "table": "billing_runs"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX billing_runs_pkey ON public.billing_runs USING btree (id)",
+      "name": "billing_runs_pkey",
+      "table": "billing_runs"
+    },
+    {
+      "definition": "CREATE INDEX idx_billing_runs_child_id ON public.billing_runs USING btree (child_id)",
+      "name": "idx_billing_runs_child_id",
+      "table": "billing_runs"
+    },
+    {
+      "definition": "CREATE INDEX idx_billing_runs_current_edge_period ON public.billing_runs USING btree (parent_id, child_id, period_key, is_current)",
+      "name": "idx_billing_runs_current_edge_period",
+      "table": "billing_runs"
+    },
+    {
+      "definition": "CREATE INDEX idx_billing_runs_parent_id ON public.billing_runs USING btree (parent_id)",
+      "name": "idx_billing_runs_parent_id",
+      "table": "billing_runs"
+    },
+    {
+      "definition": "CREATE INDEX idx_billing_runs_period_key ON public.billing_runs USING btree (period_key)",
+      "name": "idx_billing_runs_period_key",
+      "table": "billing_runs"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX ux_billing_runs_unique ON public.billing_runs USING btree (parent_id, child_id, period_key, billing_mode)",
+      "name": "ux_billing_runs_unique",
+      "table": "billing_runs"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX brand_domains_domain_key ON public.brand_domains USING btree (domain)",
+      "name": "brand_domains_domain_key",
+      "table": "brand_domains"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX brand_domains_pkey ON public.brand_domains USING btree (id)",
+      "name": "brand_domains_pkey",
+      "table": "brand_domains"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX c2w_users_email_key ON public.c2w_users USING btree (email)",
+      "name": "c2w_users_email_key",
+      "table": "c2w_users"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX c2w_users_pkey ON public.c2w_users USING btree (id)",
+      "name": "c2w_users_pkey",
+      "table": "c2w_users"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX c2w_users_user_id_key ON public.c2w_users USING btree (user_id)",
+      "name": "c2w_users_user_id_key",
+      "table": "c2w_users"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX c2w_users_username_key ON public.c2w_users USING btree (username)",
+      "name": "c2w_users_username_key",
+      "table": "c2w_users"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX coinflip_bets_pkey ON public.coinflip_bets USING btree (id)",
+      "name": "coinflip_bets_pkey",
+      "table": "coinflip_bets"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX crash_bets_pkey ON public.crash_bets USING btree (id)",
+      "name": "crash_bets_pkey",
+      "table": "crash_bets"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX crash_rounds_pkey ON public.crash_rounds USING btree (id)",
+      "name": "crash_rounds_pkey",
+      "table": "crash_rounds"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX crash_seeds_pkey ON public.crash_seeds USING btree (id)",
+      "name": "crash_seeds_pkey",
+      "table": "crash_seeds"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX crash_seeds_user_id_key ON public.crash_seeds USING btree (user_id)",
+      "name": "crash_seeds_user_id_key",
+      "table": "crash_seeds"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX deposits_pkey ON public.deposits USING btree (id)",
+      "name": "deposits_pkey",
+      "table": "deposits"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX uq_deposits_payment_id ON public.deposits USING btree (payment_id)",
+      "name": "uq_deposits_payment_id",
+      "table": "deposits"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX dice_bets_pkey ON public.dice_bets USING btree (id)",
+      "name": "dice_bets_pkey",
+      "table": "dice_bets"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX dice_seeds_pkey ON public.dice_seeds USING btree (id)",
+      "name": "dice_seeds_pkey",
+      "table": "dice_seeds"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX dice_seeds_user_id_key ON public.dice_seeds USING btree (user_id)",
+      "name": "dice_seeds_user_id_key",
+      "table": "dice_seeds"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX global_crash_bets_pkey ON public.global_crash_bets USING btree (id)",
+      "name": "global_crash_bets_pkey",
+      "table": "global_crash_bets"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX global_crash_rounds_pkey ON public.global_crash_rounds USING btree (id)",
+      "name": "global_crash_rounds_pkey",
+      "table": "global_crash_rounds"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX hilo_bets_pkey ON public.hilo_bets USING btree (id)",
+      "name": "hilo_bets_pkey",
+      "table": "hilo_bets"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX kyc_audit_logs_pkey ON public.kyc_audit_logs USING btree (id)",
+      "name": "kyc_audit_logs_pkey",
+      "table": "kyc_audit_logs"
+    },
+    {
+      "definition": "CREATE INDEX idx_kyc_limit_rules_owner_level ON public.kyc_limit_rules USING btree (owner_id, level) WHERE (is_active = true)",
+      "name": "idx_kyc_limit_rules_owner_level",
+      "table": "kyc_limit_rules"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX kyc_limit_rules_owner_id_level_key ON public.kyc_limit_rules USING btree (owner_id, level)",
+      "name": "kyc_limit_rules_owner_id_level_key",
+      "table": "kyc_limit_rules"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX kyc_limit_rules_pkey ON public.kyc_limit_rules USING btree (id)",
+      "name": "kyc_limit_rules_pkey",
+      "table": "kyc_limit_rules"
+    },
+    {
+      "definition": "CREATE INDEX idx_kyc_submissions_user_id ON public.kyc_submissions USING btree (user_id)",
+      "name": "idx_kyc_submissions_user_id",
+      "table": "kyc_submissions"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX kyc_submissions_pkey ON public.kyc_submissions USING btree (id)",
+      "name": "kyc_submissions_pkey",
+      "table": "kyc_submissions"
+    },
+    {
+      "definition": "CREATE INDEX idx_login_device_logs_account_user ON public.login_device_logs USING btree (account_type, user_id)",
+      "name": "idx_login_device_logs_account_user",
+      "table": "login_device_logs"
+    },
+    {
+      "definition": "CREATE INDEX idx_login_device_logs_agent ON public.login_device_logs USING btree (agent_id)",
+      "name": "idx_login_device_logs_agent",
+      "table": "login_device_logs"
+    },
+    {
+      "definition": "CREATE INDEX idx_login_device_logs_created_at ON public.login_device_logs USING btree (created_at DESC)",
+      "name": "idx_login_device_logs_created_at",
+      "table": "login_device_logs"
+    },
+    {
+      "definition": "CREATE INDEX idx_login_device_logs_device_hash ON public.login_device_logs USING btree (device_hash)",
+      "name": "idx_login_device_logs_device_hash",
+      "table": "login_device_logs"
+    },
+    {
+      "definition": "CREATE INDEX idx_login_device_logs_ip ON public.login_device_logs USING btree (ip_address)",
+      "name": "idx_login_device_logs_ip",
+      "table": "login_device_logs"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX login_device_logs_pkey ON public.login_device_logs USING btree (id)",
+      "name": "login_device_logs_pkey",
+      "table": "login_device_logs"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX mines_bets_pkey ON public.mines_bets USING btree (id)",
+      "name": "mines_bets_pkey",
+      "table": "mines_bets"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX password_reset_tokens_pkey ON public.password_reset_tokens USING btree (id)",
+      "name": "password_reset_tokens_pkey",
+      "table": "password_reset_tokens"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX password_reset_tokens_token_key ON public.password_reset_tokens USING btree (token)",
+      "name": "password_reset_tokens_token_key",
+      "table": "password_reset_tokens"
+    },
+    {
+      "definition": "CREATE INDEX idx_player_kyc_limit_overrides_user ON public.player_kyc_limit_overrides USING btree (user_id) WHERE (is_active = true)",
+      "name": "idx_player_kyc_limit_overrides_user",
+      "table": "player_kyc_limit_overrides"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX player_kyc_limit_overrides_pkey ON public.player_kyc_limit_overrides USING btree (id)",
+      "name": "player_kyc_limit_overrides_pkey",
+      "table": "player_kyc_limit_overrides"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX player_kyc_limit_overrides_user_id_key ON public.player_kyc_limit_overrides USING btree (user_id)",
+      "name": "player_kyc_limit_overrides_user_id_key",
+      "table": "player_kyc_limit_overrides"
+    },
+    {
+      "definition": "CREATE INDEX idx_softswiss_games_category ON public.softswiss_games USING btree (category)",
+      "name": "idx_softswiss_games_category",
+      "table": "softswiss_games"
+    },
+    {
+      "definition": "CREATE INDEX idx_softswiss_games_enabled ON public.softswiss_games USING btree (is_enabled)",
+      "name": "idx_softswiss_games_enabled",
+      "table": "softswiss_games"
+    },
+    {
+      "definition": "CREATE INDEX idx_softswiss_games_featured ON public.softswiss_games USING btree (is_featured)",
+      "name": "idx_softswiss_games_featured",
+      "table": "softswiss_games"
+    },
+    {
+      "definition": "CREATE INDEX idx_softswiss_games_image_status ON public.softswiss_games USING btree (image_status)",
+      "name": "idx_softswiss_games_image_status",
+      "table": "softswiss_games"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX softswiss_games_pkey ON public.softswiss_games USING btree (id)",
+      "name": "softswiss_games_pkey",
+      "table": "softswiss_games"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX softswiss_games_provider_game_id_key ON public.softswiss_games USING btree (provider_game_id)",
+      "name": "softswiss_games_provider_game_id_key",
+      "table": "softswiss_games"
+    },
+    {
+      "definition": "CREATE INDEX idx_softswiss_rounds_user ON public.softswiss_rounds USING btree (user_id)",
+      "name": "idx_softswiss_rounds_user",
+      "table": "softswiss_rounds"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX softswiss_rounds_pkey ON public.softswiss_rounds USING btree (id)",
+      "name": "softswiss_rounds_pkey",
+      "table": "softswiss_rounds"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX softswiss_rounds_provider_round_id_key ON public.softswiss_rounds USING btree (provider, round_id)",
+      "name": "softswiss_rounds_provider_round_id_key",
+      "table": "softswiss_rounds"
+    },
+    {
+      "definition": "CREATE INDEX idx_softswiss_sessions_user ON public.softswiss_sessions USING btree (user_id)",
+      "name": "idx_softswiss_sessions_user",
+      "table": "softswiss_sessions"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX softswiss_sessions_pkey ON public.softswiss_sessions USING btree (id)",
+      "name": "softswiss_sessions_pkey",
+      "table": "softswiss_sessions"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX softswiss_sessions_session_payload_key ON public.softswiss_sessions USING btree (session_payload)",
+      "name": "softswiss_sessions_session_payload_key",
+      "table": "softswiss_sessions"
+    },
+    {
+      "definition": "CREATE INDEX idx_softswiss_tx_original ON public.softswiss_transactions USING btree (original_transaction_id)",
+      "name": "idx_softswiss_tx_original",
+      "table": "softswiss_transactions"
+    },
+    {
+      "definition": "CREATE INDEX idx_softswiss_tx_round ON public.softswiss_transactions USING btree (round_id)",
+      "name": "idx_softswiss_tx_round",
+      "table": "softswiss_transactions"
+    },
+    {
+      "definition": "CREATE INDEX idx_softswiss_tx_user ON public.softswiss_transactions USING btree (user_id)",
+      "name": "idx_softswiss_tx_user",
+      "table": "softswiss_transactions"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX softswiss_transactions_pkey ON public.softswiss_transactions USING btree (id)",
+      "name": "softswiss_transactions_pkey",
+      "table": "softswiss_transactions"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX softswiss_transactions_provider_transaction_id_key ON public.softswiss_transactions USING btree (provider_transaction_id)",
+      "name": "softswiss_transactions_provider_transaction_id_key",
+      "table": "softswiss_transactions"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX softswiss_transactions_rollback_transaction_id_key ON public.softswiss_transactions USING btree (rollback_transaction_id)",
+      "name": "softswiss_transactions_rollback_transaction_id_key",
+      "table": "softswiss_transactions"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX transactions_pkey ON public.transactions USING btree (id)",
+      "name": "transactions_pkey",
+      "table": "transactions"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)",
+      "name": "users_pkey",
+      "table": "users"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX wallets_pkey ON public.wallets USING btree (id)",
+      "name": "wallets_pkey",
+      "table": "wallets"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX wallets_user_id_key ON public.wallets USING btree (user_id)",
+      "name": "wallets_user_id_key",
+      "table": "wallets"
+    },
+    {
+      "definition": "CREATE INDEX ix_withdrawal_audit_logs_action ON public.withdrawal_audit_logs USING btree (action)",
+      "name": "ix_withdrawal_audit_logs_action",
+      "table": "withdrawal_audit_logs"
+    },
+    {
+      "definition": "CREATE INDEX ix_withdrawal_audit_logs_withdrawal_id ON public.withdrawal_audit_logs USING btree (withdrawal_id)",
+      "name": "ix_withdrawal_audit_logs_withdrawal_id",
+      "table": "withdrawal_audit_logs"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX withdrawal_audit_logs_pkey ON public.withdrawal_audit_logs USING btree (id)",
+      "name": "withdrawal_audit_logs_pkey",
+      "table": "withdrawal_audit_logs"
+    },
+    {
+      "definition": "CREATE UNIQUE INDEX withdrawals_pkey ON public.withdrawals USING btree (id)",
+      "name": "withdrawals_pkey",
+      "table": "withdrawals"
+    }
+  ],
+  "schema_version": 1,
+  "sequences": [
+    {
+      "cycle": false,
+      "data_type": "bigint",
+      "increment": 1,
+      "max": 9223372036854775807,
+      "min": 1,
+      "name": "admin_action_logs_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "agent_ledger_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "billing_edges_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "billing_runs_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "brand_domains_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "c2w_users_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "coinflip_bets_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "crash_bets_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "crash_rounds_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "crash_seeds_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "deposits_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "dice_bets_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "dice_seeds_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "global_crash_bets_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "global_crash_rounds_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "hilo_bets_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "bigint",
+      "increment": 1,
+      "max": 9223372036854775807,
+      "min": 1,
+      "name": "kyc_audit_logs_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "bigint",
+      "increment": 1,
+      "max": 9223372036854775807,
+      "min": 1,
+      "name": "kyc_limit_rules_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "kyc_submissions_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "bigint",
+      "increment": 1,
+      "max": 9223372036854775807,
+      "min": 1,
+      "name": "login_device_logs_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "mines_bets_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "password_reset_tokens_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "bigint",
+      "increment": 1,
+      "max": 9223372036854775807,
+      "min": 1,
+      "name": "player_kyc_limit_overrides_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "softswiss_games_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "softswiss_rounds_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "softswiss_sessions_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "softswiss_transactions_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "transactions_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "wallets_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "withdrawal_audit_logs_id_seq",
+      "start": 1
+    },
+    {
+      "cycle": false,
+      "data_type": "integer",
+      "increment": 1,
+      "max": 2147483647,
+      "min": 1,
+      "name": "withdrawals_id_seq",
+      "start": 1
+    }
+  ],
+  "tables": [
+    "admin_action_logs",
+    "agent_ledger",
+    "billing_edges",
+    "billing_runs",
+    "brand_domains",
+    "c2w_users",
+    "coinflip_bets",
+    "crash_bets",
+    "crash_rounds",
+    "crash_seeds",
+    "deposits",
+    "dice_bets",
+    "dice_seeds",
+    "global_crash_bets",
+    "global_crash_rounds",
+    "hilo_bets",
+    "kyc_audit_logs",
+    "kyc_limit_rules",
+    "kyc_submissions",
+    "login_device_logs",
+    "mines_bets",
+    "password_reset_tokens",
+    "player_kyc_limit_overrides",
+    "softswiss_games",
+    "softswiss_rounds",
+    "softswiss_sessions",
+    "softswiss_transactions",
+    "transactions",
+    "users",
+    "wallets",
+    "withdrawal_audit_logs",
+    "withdrawals"
+  ]
+}
