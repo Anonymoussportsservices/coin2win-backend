@@ -1,0 +1,107 @@
+# DECISION 012: LIMITED-SCOPE MIGRATION INTEGRATION TEST, NOT FULL BASELINE VALIDATION
+# Proposed manual install on validation/wp-c03-decision-008 only.
+name: WP-C03 limited isolated migration integration
+on:
+  push:
+    branches: [validation/wp-c03-decision-008]
+    paths:
+      - '.github/workflows/wp-c03-decision-008.yml'
+      - 'migrations/**'
+      - 'migration-requirements.txt'
+      - 'ci/wp-c03-limited-baseline.sql'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  limited-migration-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: decision012_disposable_only
+          POSTGRES_DB: c2w_ci_d012
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d c2w_ci_d012"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      COIN2WIN_MIGRATION_TARGET: test
+      COIN2WIN_MIGRATION_EXPECTED_DATABASE: c2w_ci_d012
+      COIN2WIN_MIGRATION_DATABASE_URL: postgresql+psycopg2://postgres:decision012_disposable_only@127.0.0.1:5432/c2w_ci_d012
+      PGHOST: 127.0.0.1
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: decision012_disposable_only
+      PGDATABASE: c2w_ci_d012
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install repository migration dependencies
+        run: python -m pip install -r migration-requirements.txt
+      - name: Verify identity and CI-only PostgreSQL endpoint
+        run: |
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          u = os.environ['COIN2WIN_MIGRATION_DATABASE_URL']
+          assert u == 'postgresql+psycopg2://postgres:decision012_disposable_only@127.0.0.1:5432/c2w_ci_d012'
+          assert os.environ['COIN2WIN_MIGRATION_TARGET'] == 'test'
+          assert os.environ['COIN2WIN_MIGRATION_EXPECTED_DATABASE'] == 'c2w_ci_d012'
+          with create_engine(u).connect() as c:
+              assert c.execute(text('SELECT current_database()')).scalar_one() == 'c2w_ci_d012'
+              assert c.execute(text('SELECT inet_server_addr()::text')).scalar_one() in ('127.0.0.1','::1')
+          PY
+      - name: Verify frozen migration hash
+        run: |
+          echo 'b32e44075abe4fb0cda45a4daf8bed09addc56a6da24e8e102a40242216d5b39  migrations/versions/4c3e9bf8927a_product_entitlements_persistence_.py' | sha256sum -c -
+      - name: Create documented limited fixture in disposable database
+        run: psql -v ON_ERROR_STOP=1 -f ci/wp-c03-limited-baseline.sql
+      - name: Upgrade authentic Alembic chain
+        run: alembic upgrade 4c3e9bf8927a
+      - name: Assert revision schema and privileges
+        run: |
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          with create_engine(os.environ['COIN2WIN_MIGRATION_DATABASE_URL']).connect() as c:
+              assert c.execute(text('SELECT version_num FROM alembic_version')).scalar_one() == '4c3e9bf8927a'
+              tables = {x[0] for x in c.execute(text("SELECT tablename FROM pg_tables WHERE schemaname='public'"))}
+              assert {'users','brand_domains','softswiss_games','brand_casino_configurations','brand_game_configurations','platform_products','hierarchy_product_entitlements','product_entitlement_audit'} <= tables
+              cons = {x[0] for x in c.execute(text("SELECT conname FROM pg_constraint WHERE connamespace='public'::regnamespace"))}
+              assert {'uq_platform_products_key','ck_platform_products_status','ck_platform_products_key_format','uq_hpe_hierarchy_product','ck_hpe_delegation_requires_enabled','ck_pea_action'} <= cons
+              idx = {x[0] for x in c.execute(text("SELECT indexname FROM pg_indexes WHERE schemaname='public'"))}
+              assert {'ix_hpe_product_id','ix_hpe_granted_by','ix_pea_hierarchy_created','ix_pea_product_created','ix_pea_actor_created'} <= idx
+              triggers = {x[0] for x in c.execute(text('SELECT tgname FROM pg_trigger WHERE NOT tgisinternal'))}
+              assert {'c03_entitlement_role_guard','c03_user_role_guard','c03_entitlement_audit_writer','c03_audit_no_update_delete','c03_audit_no_truncate'} <= triggers
+              assert c.execute(text("SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='public.users'::regclass")).scalar_one() == 'postgres'
+              assert c.execute(text("SELECT has_table_privilege('coin2win','public.platform_products','SELECT')")).scalar_one()
+              assert not c.execute(text("SELECT has_table_privilege('coin2win','public.platform_products','INSERT')")).scalar_one()
+              assert not c.execute(text("SELECT has_table_privilege('coin2win','public.product_entitlement_audit','INSERT')")).scalar_one()
+          print('PASS: limited fixture upgrade, schema and privilege assertions')
+          PY
+      - name: Downgrade WP-C03 in disposable database
+        run: alembic downgrade 8952b95bbb5e
+      - name: Assert downgrade cleanup
+        run: |
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          with create_engine(os.environ['COIN2WIN_MIGRATION_DATABASE_URL']).connect() as c:
+              assert c.execute(text('SELECT version_num FROM alembic_version')).scalar_one() == '8952b95bbb5e'
+              tables = {x[0] for x in c.execute(text("SELECT tablename FROM pg_tables WHERE schemaname='public'"))}
+              assert not {'platform_products','hierarchy_product_entitlements','product_entitlement_audit'} & tables
+              triggers = {x[0] for x in c.execute(text('SELECT tgname FROM pg_trigger WHERE NOT tgisinternal'))}
+              assert not any(x.startswith('c03_') for x in triggers)
+              assert c.execute(text("SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='public.users'::regclass")).scalar_one() == 'coin2win'
+          print('PASS: limited fixture downgrade')
+          PY
+      - name: Re-upgrade WP-C03
+        run: alembic upgrade 4c3e9bf8927a
