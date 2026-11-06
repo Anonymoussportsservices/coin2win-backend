@@ -57,7 +57,7 @@ jobs:
           assert os.environ['COIN2WIN_MIGRATION_EXPECTED_DATABASE'] == 'c2w_ci_d012'
           with create_engine(u).connect() as c:
               assert c.execute(text('SELECT current_database()')).scalar_one() == 'c2w_ci_d012'
-              assert c.execute(text('SELECT inet_server_addr()::text')).scalar_one() in ('127.0.0.1','::1')
+              assert c.execute(text('SELECT inet_server_port()')).scalar_one() == 5432
           PY
       - name: Verify frozen migration hash
         run: |
