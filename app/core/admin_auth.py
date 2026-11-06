@@ -3,8 +3,7 @@ from app.core.config import ADMIN_KEY
 
 def require_admin(x_admin_key: str | None):
 
-    if not ADMIN_KEY:
-        return
-
-    if not x_admin_key or x_admin_key.strip() != ADMIN_KEY:
+    expected = (ADMIN_KEY or "").strip()
+    received = (x_admin_key or "").strip()
+    if not expected or not received or received != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")

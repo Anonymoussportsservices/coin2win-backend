@@ -1733,21 +1733,10 @@ Base.metadata.create_all(bind=engine)
 # Helpers
 # --------------------------
 def _require_admin(x_admin_key: str | None):
-    import sys
     expected = (ADMIN_KEY or "").strip()
     received = (x_admin_key or "").strip()
 
-    print(
-        f"[ADMIN_DEBUG] expected_len={len(expected)} received_len={len(received)} "
-        f"expected_prefix={expected[:8]!r} received_prefix={received[:8]!r} "
-        f"match={received == expected}",
-        file=sys.stderr,
-        flush=True,
-    )
-
-    if not ADMIN_KEY:
-        return
-    if not x_admin_key or received != expected:
+    if not expected or not received or received != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -5513,14 +5502,19 @@ async def admin_softswiss_games_manual_seed(request: Request, x_admin_key: str |
 
 
 
+def _require_internal_launch_key(x_internal_launch_key: str | None):
+    expected = (os.getenv("SOFTSWISS_LAUNCH_INTERNAL_KEY", ADMIN_KEY) or "").strip()
+    received = str(x_internal_launch_key or "").strip()
+    if not expected or not received or received != expected:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
 @app.post("/casino/softswiss/launch")
 async def public_softswiss_launch(
     request: Request,
     x_internal_launch_key: str | None = Header(default=None, alias="X-Internal-Launch-Key"),
 ):
-    expected_launch_key = os.getenv("SOFTSWISS_LAUNCH_INTERNAL_KEY", ADMIN_KEY).strip()
-    if expected_launch_key and str(x_internal_launch_key or "").strip() != expected_launch_key:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_internal_launch_key(x_internal_launch_key)
 
     body = await request.json()
     user_id = str(body.get("user_id") or "").strip()
